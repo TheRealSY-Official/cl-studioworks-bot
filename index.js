@@ -12,7 +12,7 @@ const client = new Client({
   ]
 });
 
-const PREFIX = '!';
+const PREFIX = '-';
 const activeGiveaways = new Map();
 
 // Express server to keep bot alive
@@ -272,17 +272,39 @@ client.on('messageCreate', async (message) => {
       .addFields(
         { 
           name: '🛡️ Moderation', 
-          value: '`!kick @user [reason]`\n`!ban @user [reason]`\n`!timeout @user <minutes> [reason]`\n`!warn @user [reason]`\n`!clear <amount>`' 
+          value: '`-kick @user [reason]`\n`-ban @user [reason]`\n`-timeout @user <minutes> [reason]`\n`-warn @user [reason]`\n`-clear <amount>`' 
         },
         { 
           name: '🎉 Giveaways', 
-          value: '`!gstart <duration> <winners> <prize>`\n`!greroll <message_id>`\nExample: `!gstart 1h 1 Discord Nitro`' 
+          value: '`-gstart <duration> <winners> <prize>`\n`-greroll <message_id>`\nExample: `-gstart 1h 1 Discord Nitro`' 
+        },
+        { 
+          name: '⚙️ Utility', 
+          value: '`-ping` - Check bot latency' 
         }
       )
       .setFooter({ text: 'C.L. StudioWorks' })
       .setTimestamp();
     
     message.channel.send({ embeds: [embed] });
+  }
+
+  // Ping Command
+  if (command === 'ping') {
+    const sent = await message.reply('🏓 Pinging...');
+    const latency = sent.createdTimestamp - message.createdTimestamp;
+    const apiLatency = Math.round(client.ws.ping);
+
+    const embed = new EmbedBuilder()
+      .setColor('#00FF00')
+      .setTitle('🏓 Pong!')
+      .addFields(
+        { name: '📨 Message Latency', value: `${latency}ms`, inline: true },
+        { name: '💓 API Latency', value: `${apiLatency}ms`, inline: true }
+      )
+      .setTimestamp();
+
+    sent.edit({ content: null, embeds: [embed] });
   }
 });
 

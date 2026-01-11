@@ -13,3 +13,28 @@
     "node": "18.x"
   }
 }
+```
+
+Click **"Commit changes"**
+
+## **Step 2: Update Bot on GitHub**
+
+1. Go to your `index.js` file on GitHub
+2. Click the **pencil icon** (Edit)
+3. Copy the ENTIRE updated code from the artifact above
+4. Paste it (replace everything)
+5. Click **"Commit changes"**
+
+## **Step 3: Redeploy on Render**
+
+1. Go to your Render dashboard: https://dashboard.render.com
+2. Click on your `cl-studioworks-bot` service
+3. Render should **automatically redeploy** when it detects the GitHub changes
+4. Wait for the deploy to finish (watch the logs)
+5. You should see: `Web server running on port 3000`
+
+## **Step 4: Get Your Render URL**
+
+At the top of your Render service page, you'll see a URL like:
+```
+https://cl-studioworks-bot.onrender.com

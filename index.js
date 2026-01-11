@@ -1,5 +1,6 @@
 const Discord = require('discord.js');
 const { Client, GatewayIntentBits, EmbedBuilder, PermissionFlagsBits, ActionRowBuilder, ButtonBuilder, ButtonStyle } = Discord;
+const express = require('express');
 
 const client = new Client({
   intents: [
@@ -13,6 +14,18 @@ const client = new Client({
 
 const PREFIX = '!';
 const activeGiveaways = new Map();
+
+// Express server to keep bot alive
+const app = express();
+const PORT = process.env.PORT || 3000;
+
+app.get('/', (req, res) => {
+  res.send('🤖 C.L. StudioWorks Bot is running!');
+});
+
+app.listen(PORT, () => {
+  console.log(`Web server running on port ${PORT}`);
+});
 
 // Bot Ready Event
 client.once('ready', () => {

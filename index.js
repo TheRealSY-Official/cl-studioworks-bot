@@ -1,5 +1,5 @@
 const Discord = require('discord.js');
-const { Client, GatewayIntentBits, EmbedBuilder, PermissionFlagsBits, ActionRowBuilder, ButtonBuilder, ButtonStyle } = Discord;
+const { Client, GatewayIntentBits, EmbedBuilder, PermissionFlagsBits, ActionRowBuilder, ButtonBuilder, ButtonStyle, REST, Routes, SlashCommandBuilder } = require('discord.js');
 const express = require('express');
 
 const client = new Client({
@@ -12,7 +12,6 @@ const client = new Client({
   ]
 });
 
-const PREFIX = '-';
 const activeGiveaways = new Map();
 
 // Express server to keep bot alive
@@ -27,31 +26,216 @@ app.listen(PORT, () => {
   console.log(`Web server running on port ${PORT}`);
 });
 
-// Bot Ready Event
-client.once('ready', () => {
+// Slash Commands Definition
+const commands = [
+  new SlashCommandBuilder()
+    .setName('ping')
+    .setDescription('Check bot latency'),
+  
+  new SlashCommandBuilder()
+    .setName('help')
+    .setDescription('Show all available commands'),
+  
+  new SlashCommandBuilder()
+    .setName('kick')
+    .setDescription('Kick a member from the server')
+    .addUserOption(option =>
+      option.setName('user')
+        .setDescription('The user to kick')
+        .setRequired(true))
+    .addStringOption(option =>
+      option.setName('reason')
+        .setDescription('Reason for kicking')
+        .setRequired(false))
+    .setDefaultMemberPermissions(PermissionFlagsBits.KickMembers),
+  
+  new SlashCommandBuilder()
+    .setName('ban')
+    .setDescription('Ban a member from the server')
+    .addUserOption(option =>
+      option.setName('user')
+        .setDescription('The user to ban')
+        .setRequired(true))
+    .addStringOption(option =>
+      option.setName('reason')
+        .setDescription('Reason for banning')
+        .setRequired(false))
+    .setDefaultMemberPermissions(PermissionFlagsBits.BanMembers),
+  
+  new SlashCommandBuilder()
+    .setName('timeout')
+    .setDescription('Timeout a member')
+    .addUserOption(option =>
+      option.setName('user')
+        .setDescription('The user to timeout')
+        .setRequired(true))
+    .addIntegerOption(option =>
+      option.setName('duration')
+        .setDescription('Duration in minutes')
+        .setRequired(true)
+        .setMinValue(1)
+        .setMaxValue(40320))
+    .addStringOption(option =>
+      option.setName('reason')
+        .setDescription('Reason for timeout')
+        .setRequired(false))
+    .setDefaultMemberPermissions(PermissionFlagsBits.ModerateMembers),
+  
+  new SlashCommandBuilder()
+    .setName('warn')
+    .setDescription('Warn a member')
+    .addUserOption(option =>
+      option.setName('user')
+        .setDescription('The user to warn')
+        .setRequired(true))
+    .addStringOption(option =>
+      option.setName('reason')
+        .setDescription('Reason for warning')
+        .setRequired(false))
+    .setDefaultMemberPermissions(PermissionFlagsBits.ModerateMembers),
+  
+  new SlashCommandBuilder()
+    .setName('clear')
+    .setDescription('Delete multiple messages')
+    .addIntegerOption(option =>
+      option.setName('amount')
+        .setDescription('Number of messages to delete (1-100)')
+        .setRequired(true)
+        .setMinValue(1)
+        .setMaxValue(100))
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageMessages),
+  
+  new SlashCommandBuilder()
+    .setName('gstart')
+    .setDescription('Start a giveaway')
+    .addStringOption(option =>
+      option.setName('duration')
+        .setDescription('Duration (e.g., 1m, 1h, 1d)')
+        .setRequired(true))
+    .addStringOption(option =>
+      option.setName('prize')
+        .setDescription('What are you giving away?')
+        .setRequired(true))
+    .addIntegerOption(option =>
+      option.setName('winners')
+        .setDescription('Number of winners')
+        .setRequired(false)
+        .setMinValue(1)
+        .setMaxValue(20))
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
+  
+  new SlashCommandBuilder()
+    .setName('greroll')
+    .setDescription('Reroll a giveaway')
+    .addStringOption(option =>
+      option.setName('message_id')
+        .setDescription('The giveaway message ID')
+        .setRequired(true))
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
+].map(command => command.toJSON());
+
+// Register Slash Commands
+const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
+
+client.once('ready', async () => {
   console.log(`✅ ${client.user.tag} is online!`);
   client.user.setActivity('C.L. StudioWorks', { type: 'WATCHING' });
+
+  try {
+    console.log('Started refreshing application (/) commands.');
+
+    await rest.put(
+      Routes.applicationCommands(client.user.id),
+      { body: commands },
+    );
+
+    console.log('Successfully reloaded application (/) commands.');
+  } catch (error) {
+    console.error(error);
+  }
 });
 
-// Message Handler
-client.on('messageCreate', async (message) => {
-  if (message.author.bot || !message.content.startsWith(PREFIX)) return;
+// Slash Command Handler
+client.on('interactionCreate', async (interaction) => {
+  // Handle Buttons
+  if (interaction.isButton()) {
+    if (interaction.customId === 'giveaway_enter') {
+      const giveaway = activeGiveaways.get(interaction.message.id);
+      
+      if (!giveaway) {
+        return interaction.reply({ content: '❌ This giveaway has ended.', ephemeral: true });
+      }
 
-  const args = message.content.slice(PREFIX.length).trim().split(/ +/);
-  const command = args.shift().toLowerCase();
+      if (giveaway.participants.has(interaction.user.id)) {
+        return interaction.reply({ content: '✅ You are already entered!', ephemeral: true });
+      }
+
+      giveaway.participants.add(interaction.user.id);
+      interaction.reply({ content: '🎉 You have entered the giveaway!', ephemeral: true });
+    }
+    return;
+  }
+
+  // Handle Slash Commands
+  if (!interaction.isChatInputCommand()) return;
+
+  const { commandName } = interaction;
+
+  // ==================== UTILITY COMMANDS ====================
+  
+  if (commandName === 'ping') {
+    const apiLatency = Math.round(client.ws.ping);
+
+    const embed = new EmbedBuilder()
+      .setColor('#00FF00')
+      .setTitle('🏓 Pong!')
+      .addFields(
+        { name: '💓 API Latency', value: `${apiLatency}ms`, inline: true }
+      )
+      .setTimestamp();
+
+    await interaction.reply({ embeds: [embed] });
+  }
+
+  if (commandName === 'help') {
+    const embed = new EmbedBuilder()
+      .setColor('#0099FF')
+      .setTitle('🤖 C.L. StudioWorks Bot - Commands')
+      .setDescription('Moderation and Giveaway Bot')
+      .addFields(
+        { 
+          name: '🛡️ Moderation', 
+          value: '`/kick` - Kick a member\n`/ban` - Ban a member\n`/timeout` - Timeout a member\n`/warn` - Warn a member\n`/clear` - Delete messages' 
+        },
+        { 
+          name: '🎉 Giveaways', 
+          value: '`/gstart` - Start a giveaway\n`/greroll` - Reroll giveaway winners' 
+        },
+        { 
+          name: '⚙️ Utility', 
+          value: '`/ping` - Check bot latency\n`/help` - Show this message' 
+        }
+      )
+      .setFooter({ text: 'C.L. StudioWorks' })
+      .setTimestamp();
+    
+    await interaction.reply({ embeds: [embed] });
+  }
 
   // ==================== MODERATION COMMANDS ====================
-  
-  // Kick Command
-  if (command === 'kick') {
-    if (!message.member.permissions.has(PermissionFlagsBits.KickMembers)) {
-      return message.reply('❌ You need the "Kick Members" permission.');
+
+  if (commandName === 'kick') {
+    const user = interaction.options.getUser('user');
+    const reason = interaction.options.getString('reason') || 'No reason provided';
+    const member = interaction.guild.members.cache.get(user.id);
+
+    if (!member) {
+      return interaction.reply({ content: '❌ User not found in this server.', ephemeral: true });
     }
 
-    const member = message.mentions.members.first();
-    if (!member) return message.reply('❌ Please mention a user to kick.');
-
-    const reason = args.slice(1).join(' ') || 'No reason provided';
+    if (!member.kickable) {
+      return interaction.reply({ content: '❌ I cannot kick this user. They may have higher roles than me.', ephemeral: true });
+    }
 
     try {
       await member.kick(reason);
@@ -59,27 +243,29 @@ client.on('messageCreate', async (message) => {
         .setColor('#FF6B6B')
         .setTitle('🥾 Member Kicked')
         .addFields(
-          { name: 'User', value: `${member.user.tag}`, inline: true },
-          { name: 'Moderator', value: `${message.author.tag}`, inline: true },
+          { name: 'User', value: `${user.tag}`, inline: true },
+          { name: 'Moderator', value: `${interaction.user.tag}`, inline: true },
           { name: 'Reason', value: reason }
         )
         .setTimestamp();
-      message.channel.send({ embeds: [embed] });
+      await interaction.reply({ embeds: [embed] });
     } catch (error) {
-      message.reply('❌ Failed to kick member. Check my permissions.');
+      await interaction.reply({ content: '❌ Failed to kick member.', ephemeral: true });
     }
   }
 
-  // Ban Command
-  if (command === 'ban') {
-    if (!message.member.permissions.has(PermissionFlagsBits.BanMembers)) {
-      return message.reply('❌ You need the "Ban Members" permission.');
+  if (commandName === 'ban') {
+    const user = interaction.options.getUser('user');
+    const reason = interaction.options.getString('reason') || 'No reason provided';
+    const member = interaction.guild.members.cache.get(user.id);
+
+    if (!member) {
+      return interaction.reply({ content: '❌ User not found in this server.', ephemeral: true });
     }
 
-    const member = message.mentions.members.first();
-    if (!member) return message.reply('❌ Please mention a user to ban.');
-
-    const reason = args.slice(1).join(' ') || 'No reason provided';
+    if (!member.bannable) {
+      return interaction.reply({ content: '❌ I cannot ban this user. They may have higher roles than me.', ephemeral: true });
+    }
 
     try {
       await member.ban({ reason });
@@ -87,32 +273,30 @@ client.on('messageCreate', async (message) => {
         .setColor('#FF0000')
         .setTitle('🔨 Member Banned')
         .addFields(
-          { name: 'User', value: `${member.user.tag}`, inline: true },
-          { name: 'Moderator', value: `${message.author.tag}`, inline: true },
+          { name: 'User', value: `${user.tag}`, inline: true },
+          { name: 'Moderator', value: `${interaction.user.tag}`, inline: true },
           { name: 'Reason', value: reason }
         )
         .setTimestamp();
-      message.channel.send({ embeds: [embed] });
+      await interaction.reply({ embeds: [embed] });
     } catch (error) {
-      message.reply('❌ Failed to ban member. Check my permissions.');
+      await interaction.reply({ content: '❌ Failed to ban member.', ephemeral: true });
     }
   }
 
-  // Timeout/Mute Command
-  if (command === 'timeout' || command === 'mute') {
-    if (!message.member.permissions.has(PermissionFlagsBits.ModerateMembers)) {
-      return message.reply('❌ You need the "Moderate Members" permission.');
+  if (commandName === 'timeout') {
+    const user = interaction.options.getUser('user');
+    const duration = interaction.options.getInteger('duration');
+    const reason = interaction.options.getString('reason') || 'No reason provided';
+    const member = interaction.guild.members.cache.get(user.id);
+
+    if (!member) {
+      return interaction.reply({ content: '❌ User not found in this server.', ephemeral: true });
     }
 
-    const member = message.mentions.members.first();
-    if (!member) return message.reply('❌ Please mention a user to timeout.');
-
-    const duration = parseInt(args[1]);
-    if (!duration || duration < 1) {
-      return message.reply('❌ Please specify a duration in minutes (1-40320).');
+    if (!member.moderatable) {
+      return interaction.reply({ content: '❌ I cannot timeout this user. They may have higher roles than me.', ephemeral: true });
     }
-
-    const reason = args.slice(2).join(' ') || 'No reason provided';
 
     try {
       await member.timeout(duration * 60 * 1000, reason);
@@ -120,94 +304,74 @@ client.on('messageCreate', async (message) => {
         .setColor('#FFA500')
         .setTitle('⏰ Member Timed Out')
         .addFields(
-          { name: 'User', value: `${member.user.tag}`, inline: true },
+          { name: 'User', value: `${user.tag}`, inline: true },
           { name: 'Duration', value: `${duration} minutes`, inline: true },
-          { name: 'Moderator', value: `${message.author.tag}`, inline: true },
+          { name: 'Moderator', value: `${interaction.user.tag}`, inline: true },
           { name: 'Reason', value: reason }
         )
         .setTimestamp();
-      message.channel.send({ embeds: [embed] });
+      await interaction.reply({ embeds: [embed] });
     } catch (error) {
-      message.reply('❌ Failed to timeout member. Check my permissions.');
+      await interaction.reply({ content: '❌ Failed to timeout member.', ephemeral: true });
     }
   }
 
-  // Warn Command
-  if (command === 'warn') {
-    if (!message.member.permissions.has(PermissionFlagsBits.ModerateMembers)) {
-      return message.reply('❌ You need moderation permissions.');
+  if (commandName === 'warn') {
+    const user = interaction.options.getUser('user');
+    const reason = interaction.options.getString('reason') || 'No reason provided';
+    const member = interaction.guild.members.cache.get(user.id);
+
+    if (!member) {
+      return interaction.reply({ content: '❌ User not found in this server.', ephemeral: true });
     }
-
-    const member = message.mentions.members.first();
-    if (!member) return message.reply('❌ Please mention a user to warn.');
-
-    const reason = args.slice(1).join(' ') || 'No reason provided';
 
     const embed = new EmbedBuilder()
       .setColor('#FFFF00')
       .setTitle('⚠️ Member Warned')
       .addFields(
-        { name: 'User', value: `${member.user.tag}`, inline: true },
-        { name: 'Moderator', value: `${message.author.tag}`, inline: true },
+        { name: 'User', value: `${user.tag}`, inline: true },
+        { name: 'Moderator', value: `${interaction.user.tag}`, inline: true },
         { name: 'Reason', value: reason }
       )
       .setTimestamp();
     
-    message.channel.send({ embeds: [embed] });
+    await interaction.reply({ embeds: [embed] });
     
     try {
-      await member.send(`You have been warned in **${message.guild.name}**\nReason: ${reason}`);
+      await member.send(`You have been warned in **${interaction.guild.name}**\nReason: ${reason}`);
     } catch (e) {
-      message.channel.send('⚠️ Could not DM the user.');
+      await interaction.followUp({ content: '⚠️ Could not DM the user.', ephemeral: true });
     }
   }
 
-  // Clear/Purge Messages
-  if (command === 'clear' || command === 'purge') {
-    if (!message.member.permissions.has(PermissionFlagsBits.ManageMessages)) {
-      return message.reply('❌ You need the "Manage Messages" permission.');
-    }
-
-    const amount = parseInt(args[0]);
-    if (!amount || amount < 1 || amount > 100) {
-      return message.reply('❌ Please specify a number between 1 and 100.');
-    }
+  if (commandName === 'clear') {
+    const amount = interaction.options.getInteger('amount');
 
     try {
-      await message.channel.bulkDelete(amount + 1, true);
-      const reply = await message.channel.send(`✅ Deleted ${amount} messages.`);
-      setTimeout(() => reply.delete(), 3000);
+      await interaction.channel.bulkDelete(amount, true);
+      await interaction.reply({ content: `✅ Deleted ${amount} messages.`, ephemeral: true });
     } catch (error) {
-      message.reply('❌ Failed to delete messages. They might be older than 14 days.');
+      await interaction.reply({ content: '❌ Failed to delete messages. They might be older than 14 days.', ephemeral: true });
     }
   }
 
   // ==================== GIVEAWAY COMMANDS ====================
 
-  // Start Giveaway
-  if (command === 'gstart' || command === 'giveaway') {
-    if (!message.member.permissions.has(PermissionFlagsBits.ManageGuild)) {
-      return message.reply('❌ You need the "Manage Server" permission.');
-    }
-
-    const duration = args[0];
-    const winners = parseInt(args[1]) || 1;
-    const prize = args.slice(2).join(' ');
-
-    if (!duration || !prize) {
-      return message.reply('❌ Usage: `!gstart <duration> <winners> <prize>`\nExample: `!gstart 1h 1 Discord Nitro`');
-    }
+  if (commandName === 'gstart') {
+    const duration = interaction.options.getString('duration');
+    const prize = interaction.options.getString('prize');
+    const winners = interaction.options.getInteger('winners') || 1;
 
     const time = parseDuration(duration);
     if (!time) {
-      return message.reply('❌ Invalid duration. Use format like: 1m, 1h, 1d');
+      return interaction.reply({ content: '❌ Invalid duration. Use format like: 1m, 1h, 1d', ephemeral: true });
     }
 
     const embed = new EmbedBuilder()
       .setColor('#00FF00')
       .setTitle('🎉 GIVEAWAY 🎉')
       .setDescription(`**Prize:** ${prize}\n**Winners:** ${winners}\n**Ends:** <t:${Math.floor((Date.now() + time) / 1000)}:R>`)
-      .setFooter({ text: `Hosted by ${message.author.tag}` })
+      .setFooter({ text: `Hosted by ${interaction.user.tag}` })
       .setTimestamp(Date.now() + time);
 
     const row = new ActionRowBuilder()
@@ -218,113 +382,39 @@ client.on('messageCreate', async (message) => {
           .setStyle(ButtonStyle.Primary)
       );
 
-    const giveawayMsg = await message.channel.send({ embeds: [embed], components: [row] });
+    const giveawayMsg = await interaction.reply({ embeds: [embed], components: [row], fetchReply: true });
 
     const giveawayData = {
       messageId: giveawayMsg.id,
-      channelId: message.channel.id,
-      guildId: message.guild.id,
+      channelId: interaction.channel.id,
+      guildId: interaction.guild.id,
       prize,
       winners,
       endTime: Date.now() + time,
-      host: message.author.id,
+      host: interaction.user.id,
       participants: new Set()
     };
 
     activeGiveaways.set(giveawayMsg.id, giveawayData);
-
     setTimeout(() => endGiveaway(giveawayMsg.id), time);
-    message.delete().catch(() => {});
   }
 
-  // Reroll Giveaway
-  if (command === 'greroll') {
-    if (!message.member.permissions.has(PermissionFlagsBits.ManageGuild)) {
-      return message.reply('❌ You need the "Manage Server" permission.');
-    }
-
-    const messageId = args[0];
-    if (!messageId) {
-      return message.reply('❌ Please provide the giveaway message ID.');
-    }
-
+  if (commandName === 'greroll') {
+    const messageId = interaction.options.getString('message_id');
     const giveaway = activeGiveaways.get(messageId);
+    
     if (!giveaway) {
-      return message.reply('❌ Giveaway not found or already ended.');
+      return interaction.reply({ content: '❌ Giveaway not found or already ended.', ephemeral: true });
     }
 
     if (giveaway.participants.size === 0) {
-      return message.reply('❌ No participants to reroll.');
+      return interaction.reply({ content: '❌ No participants to reroll.', ephemeral: true });
     }
 
     const winners = selectWinners(giveaway.participants, giveaway.winners);
     const winnerMentions = winners.map(id => `<@${id}>`).join(', ');
 
-    message.channel.send(`🎉 **Rerolled!** New winner(s): ${winnerMentions}`);
-  }
-
-  // Help Command
-  if (command === 'help') {
-    const embed = new EmbedBuilder()
-      .setColor('#0099FF')
-      .setTitle('🤖 C.L. StudioWorks Bot - Commands')
-      .setDescription('Moderation and Giveaway Bot')
-      .addFields(
-        { 
-          name: '🛡️ Moderation', 
-          value: '`-kick @user [reason]`\n`-ban @user [reason]`\n`-timeout @user <minutes> [reason]`\n`-warn @user [reason]`\n`-clear <amount>`' 
-        },
-        { 
-          name: '🎉 Giveaways', 
-          value: '`-gstart <duration> <winners> <prize>`\n`-greroll <message_id>`\nExample: `-gstart 1h 1 Discord Nitro`' 
-        },
-        { 
-          name: '⚙️ Utility', 
-          value: '`-ping` - Check bot latency' 
-        }
-      )
-      .setFooter({ text: 'C.L. StudioWorks' })
-      .setTimestamp();
-    
-    message.channel.send({ embeds: [embed] });
-  }
-
-  // Ping Command
-  if (command === 'ping') {
-    const sent = await message.reply('🏓 Pinging...');
-    const latency = sent.createdTimestamp - message.createdTimestamp;
-    const apiLatency = Math.round(client.ws.ping);
-
-    const embed = new EmbedBuilder()
-      .setColor('#00FF00')
-      .setTitle('🏓 Pong!')
-      .addFields(
-        { name: '📨 Message Latency', value: `${latency}ms`, inline: true },
-        { name: '💓 API Latency', value: `${apiLatency}ms`, inline: true }
-      )
-      .setTimestamp();
-
-    sent.edit({ content: null, embeds: [embed] });
-  }
-});
-
-// Button Interaction Handler
-client.on('interactionCreate', async (interaction) => {
-  if (!interaction.isButton()) return;
-
-  if (interaction.customId === 'giveaway_enter') {
-    const giveaway = activeGiveaways.get(interaction.message.id);
-    
-    if (!giveaway) {
-      return interaction.reply({ content: '❌ This giveaway has ended.', ephemeral: true });
-    }
-
-    if (giveaway.participants.has(interaction.user.id)) {
-      return interaction.reply({ content: '✅ You are already entered!', ephemeral: true });
-    }
-
-    giveaway.participants.add(interaction.user.id);
-    interaction.reply({ content: '🎉 You have entered the giveaway!', ephemeral: true });
+    await interaction.reply(`🎉 **Rerolled!** New winner(s): ${winnerMentions}`);
   }
 });
 

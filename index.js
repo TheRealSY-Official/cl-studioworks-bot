@@ -19,7 +19,11 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 app.get('/', (req, res) => {
-  res.send('🤖 C.L. StudioWorks Bot is running!');
+  if (client.isReady()) {
+    res.status(200).send('🤖 C.L. StudioWorks Bot is running and connected to Discord!');
+  } else {
+    res.status(503).send('❌ Bot is not connected to Discord');
+  }
 });
 
 app.listen(PORT, () => {

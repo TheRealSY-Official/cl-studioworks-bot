@@ -1542,3 +1542,112 @@ client.on('interactionCreate', async (interaction) => {
       await interaction.reply({ content: `✅ Sticky message removed from ${channel}!`, ephemeral: true });
     }
   }
+
+  // ==================== AUTO-RESPONDER COMMANDS ====================
+
+  if (commandName === 'autorespond') {
+    if (!hasPermission(interaction.member, 'mod', config)) {
+      return interaction.reply({ content: '❌ You need moderator permissions.', ephemeral: true });
+    }
+    
+    const subcommand = interaction.options.getSubcommand();
+    
+    if (subcommand === 'add') {
+      const trigger = interaction.options.getString('trigger');
+      const response = interaction.options.getString('response');
+      const caseSensitive = interaction.options.getBoolean('case_sensitive') || false;
+      
+      config.autoResponders.push({ trigger, response, caseSensitive });
+      await config.save();
+      
+      await interaction.reply({ content: `✅ Auto-responder added!`, ephemeral: true });
+    } else if (subcommand === 'remove') {
+      const trigger = interaction.options.getString('trigger');
+      
+      const index = config.autoResponders.findIndex(a => a.trigger === trigger);
+      if (index === -1) {
+        return interaction.reply({ content: '❌ Auto-responder not found.', ephemeral: true
+
+                                      } else if (subcommand === 'remove') {
+      const trigger = interaction.options.getString('trigger');
+      const index = config.autoResponders.findIndex(a => a.trigger === trigger);
+
+      if (index === -1) {
+        return interaction.reply({ content: '❌ Auto-responder not found.', ephemeral: true });
+      }
+
+      config.autoResponders.splice(index, 1);
+      await config.save();
+
+      await interaction.reply({ content: '✅ Auto-responder removed.', ephemeral: true });
+    } 
+    else if (subcommand === 'list') {
+      if (config.autoResponders.length === 0) {
+        return interaction.reply({ content: 'ℹ️ No auto-responders configured.', ephemeral: true });
+      }
+
+      const embed = new EmbedBuilder()
+        .setTitle('Auto-Responders')
+        .setColor('#0099FF')
+        .setDescription(
+          config.autoResponders
+            .map(a => `**Trigger:** ${a.trigger}\n**Response:** ${a.response}`)
+            .join('\n\n')
+        )
+        .setTimestamp();
+
+      await interaction.reply({ embeds: [embed], ephemeral: true });
+    }
+  }
+}); // END interactionCreate
+
+// ==================== GIVEAWAY HELPERS ====================
+
+function selectWinners(participants, count) {
+  const array = Array.from(participants);
+  const winners = [];
+
+  while (winners.length < count && array.length > 0) {
+    const index = Math.floor(Math.random() * array.length);
+    winners.push(array.splice(index, 1)[0]);
+  }
+
+  return winners;
+}
+
+async function endGiveaway(messageId) {
+  const giveaway = activeGiveaways.get(messageId);
+  if (!giveaway) return;
+
+  const channel = await client.channels.fetch(giveaway.channelId).catch(() => null);
+  if (!channel) return;
+
+  const message = await channel.messages.fetch(messageId).catch(() => null);
+  if (!message) return;
+
+  const winners = giveaway.participants.size > 0
+    ? selectWinners(giveaway.participants, giveaway.winners)
+    : [];
+
+  const embed = EmbedBuilder.from(message.embeds[0])
+    .setTitle('🎉 GIVEAWAY ENDED')
+    .setTimestamp();
+
+  if (winners.length > 0) {
+    embed.addFields({
+      name: 'Winner(s)',
+      value: winners.map(id => `<@${id}>`).join(', ')
+    });
+    await channel.send(`🎉 Congratulations ${winners.map(id => `<@${id}>`).join(', ')}! You won **${giveaway.prize}**`);
+  } else {
+    embed.addFields({ name: 'Result', value: 'No valid entries.' });
+  }
+
+  await message.edit({ embeds: [embed], components: [] });
+  activeGiveaways.delete(messageId);
+}
+
+// ==================== LOGIN ====================
+
+client.login(process.env.DISCORD_TOKEN)
+  .catch(err => console.error('❌ Failed to login:', err));

@@ -997,12 +997,26 @@ client.on('interactionCreate', async (interaction) => {
   
   if (commandName === 'ping') {
     const apiLatency = Math.round(client.ws.ping);
+    const uptime = Date.now() - client.readyTimestamp;
+    
+    // Format uptime
+    const days = Math.floor(uptime / 86400000);
+    const hours = Math.floor((uptime % 86400000) / 3600000);
+    const minutes = Math.floor((uptime % 3600000) / 60000);
+    const seconds = Math.floor((uptime % 60000) / 1000);
+    
+    let uptimeString = '';
+    if (days > 0) uptimeString += `${days}d `;
+    if (hours > 0 || days > 0) uptimeString += `${hours}h `;
+    if (minutes > 0 || hours > 0 || days > 0) uptimeString += `${minutes}m `;
+    uptimeString += `${seconds}s`;
 
     const embed = new EmbedBuilder()
       .setTitle('Pong!')
       .setColor('#00FF00')
       .addFields(
-        { name: 'API Latency', value: `${apiLatency}ms`, inline: true }
+        { name: 'API Latency', value: `${apiLatency}ms`, inline: true },
+        { name: 'Uptime', value: uptimeString, inline: true }
       )
       .setTimestamp();
 

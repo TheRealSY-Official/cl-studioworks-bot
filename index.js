@@ -475,6 +475,50 @@ const commands = [
                 .setDescription('The channel for message logs')
                 .setRequired(true))))
     .addSubcommandGroup(group =>
+      group.setName('webhook')
+        .setDescription('Configure webhook logging (prevents rate limits)')
+        .addSubcommand(sub =>
+          sub.setName('server')
+            .setDescription('Set server log webhook URL')
+            .addStringOption(option =>
+              option.setName('webhook_url')
+                .setDescription('The webhook URL for server logs')
+                .setRequired(true)))
+        .addSubcommand(sub =>
+          sub.setName('member')
+            .setDescription('Set member log webhook URL')
+            .addStringOption(option =>
+              option.setName('webhook_url')
+                .setDescription('The webhook URL for member logs')
+                .setRequired(true)))
+        .addSubcommand(sub =>
+          sub.setName('channel')
+            .setDescription('Set channel log webhook URL')
+            .addStringOption(option =>
+              option.setName('webhook_url')
+                .setDescription('The webhook URL for channel logs')
+                .setRequired(true)))
+        .addSubcommand(sub =>
+          sub.setName('message')
+            .setDescription('Set message log webhook URL')
+            .addStringOption(option =>
+              option.setName('webhook_url')
+                .setDescription('The webhook URL for message logs')
+                .setRequired(true)))
+        .addSubcommand(sub =>
+          sub.setName('remove')
+            .setDescription('Remove a webhook')
+            .addStringOption(option =>
+              option.setName('type')
+                .setDescription('Which webhook to remove')
+                .setRequired(true)
+                .addChoices(
+                  { name: 'Server', value: 'server' },
+                  { name: 'Member', value: 'member' },
+                  { name: 'Channel', value: 'channel' },
+                  { name: 'Message', value: 'message' }
+                ))))
+    .addSubcommandGroup(group =>
       group.setName('welcome')
         .setDescription('Configure welcome messages')
         .addSubcommand(sub =>

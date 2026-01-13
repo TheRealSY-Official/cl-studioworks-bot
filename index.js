@@ -1566,4 +1566,82 @@ client.on('interactionCreate', async (interaction) => {
       
       const index = config.autoResponders.findIndex(a => a.trigger === trigger);
       if (index === -1) {
-        return interaction.reply({ content: '❌ Auto-responder not found.', ephemeral: true
+        return interaction.reply({ content: '❌ Auto-responder not found.', ephemeral: true });
+      }
+      
+      config.autoResponders.splice(index, 1);
+      await config.save();
+      
+      await interaction.reply({ content: `✅ Auto-responder removed!`, ephemeral: true });
+    } else if (subcommand === 'list') {
+      if (config.autoResponders.length === 0) {
+        return interaction.reply({ content: '❌ No auto-responders configured.', ephemeral: true });
+      }
+      
+      const embed = new EmbedBuilder()
+        .setTitle('Auto-Responders')
+        .setColor('#0099FF')
+        .setTimestamp();
+      
+      for (const [index, ar] of config.autoResponders.entries()) {
+        embed.addFields({
+          name: `${index + 1}. Trigger: "${ar.trigger}"`,
+          value: `Response: ${ar.response}\nCase Sensitive: ${ar.caseSensitive ? 'Yes' : 'No'}`
+        });
+      }
+      
+      await interaction.reply({ embeds: [embed], ephemeral: true });
+    }
+  }
+});
+
+// Helper Functions for Giveaways
+function selectWinners(participants, count) {
+  const arr = Array.from(participants);
+  const winners = [];
+  for (let i = 0; i < Math.min(count, arr.length); i++) {
+    const index = Math.floor(Math.random() * arr.length);
+    winners.push(arr.splice(index, 1)[0]);
+  }
+  return winners;
+}
+
+async function endGiveaway(messageId) {
+  const giveaway = activeGiveaways.get(messageId);
+  if (!giveaway) return;
+
+  try {
+    const channel = await client.channels.fetch(giveaway.channelId);
+    const message = await channel.messages.fetch(giveaway.messageId);
+
+    if (giveaway.participants.size === 0) {
+      const embed = new EmbedBuilder()
+        .setColor('#FF0000')
+        .setTitle('GIVEAWAY ENDED')
+        .setDescription(`**Prize:** ${giveaway.prize}\n**Winner:** No valid entries`)
+        .setTimestamp();
+
+      message.edit({ embeds: [embed], components: [] });
+      channel.send('😢 No one entered the giveaway!');
+    } else {
+      const winners = selectWinners(giveaway.participants, giveaway.winners);
+      const winnerMentions = winners.map(id => `<@${id}>`).join(', ');
+
+      const embed = new EmbedBuilder()
+        .setColor('#FFD700')
+        .setTitle('GIVEAWAY ENDED')
+        .setDescription(`**Prize:** ${giveaway.prize}\n**Winner(s):** ${winnerMentions}`)
+        .setTimestamp();
+
+      message.edit({ embeds: [embed], components: [] });
+      channel.send(`🎊 Congratulations ${winnerMentions}! You won **${giveaway.prize}**!`);
+    }
+
+    activeGiveaways.delete(messageId);
+  } catch (error) {
+    console.error('Error ending giveaway:', error);
+  }
+}
+
+// Login
+client.login(process.env.DISCORD_TOKEN);

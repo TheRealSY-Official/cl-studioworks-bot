@@ -1588,8 +1588,8 @@ client.on('interactionCreate', async (interaction) => {
   }
   
   if (commandName === 'unban') {
-    if (!hasPermission(interaction.member, 'mod', config)) {
-      return interaction.reply({ content: '❌ You need moderator permissions.', ephemeral: true });
+    if (!hasPermission(interaction.member, 'executiveMod', config)) {
+      return interaction.reply({ content: '❌ You need executive moderator permissions.', ephemeral: true });
     }
     
     const userId = interaction.options.getString('user_id').replace(/[<@!>]/g, '');
@@ -1753,6 +1753,10 @@ client.on('interactionCreate', async (interaction) => {
     }
     
     if (subcommand === 'edit') {
+      if (!hasPermission(interaction.member, 'executiveMod', config)) {
+        return interaction.reply({ content: '❌ You need executive moderator permissions to edit cases.', ephemeral: true });
+      }
+      
       const caseId = interaction.options.getString('case_id');
       const newReason = interaction.options.getString('reason');
       const newDuration = interaction.options.getString('duration');
@@ -1769,21 +1773,38 @@ client.on('interactionCreate', async (interaction) => {
         return interaction.reply({ content: '❌ Case not found.', ephemeral: true });
       }
       
+      let changes = [];
+      let targetUserId = '';
+      
       if (warning) {
-        if (newReason) warning.reason = newReason;
+        targetUserId = warning.userId;
+        if (newReason) {
+          changes.push(`Reason: ${warning.reason} → ${newReason}`);
+          warning.reason = newReason;
+        }
         if (newDuration) {
           const time = parseDuration(newDuration);
           if (time) {
+            const oldExpiry = warning.expiresAt ? `<t:${Math.floor(warning.expiresAt.getTime() / 1000)}:R>` : 'Never';
+            const newExpiry = `<t:${Math.floor((Date.now() + time) / 1000)}:R>`;
+            changes.push(`Expiry: ${oldExpiry} → ${newExpiry}`);
             warning.expiresAt = new Date(Date.now() + time);
             warning.expired = false;
           }
         }
         await warning.save();
       } else if (action) {
-        if (newReason) action.reason = newReason;
+        targetUserId = action.userId;
+        if (newReason) {
+          changes.push(`Reason: ${action.reason} → ${newReason}`);
+          action.reason = newReason;
+        }
         if (newDuration && (action.action === 'ban' || action.action === 'timeout')) {
           const time = parseDuration(newDuration);
           if (time) {
+            const oldExpiry = action.expiresAt ? `<t:${Math.floor(action.expiresAt.getTime() / 1000)}:R>` : 'Never';
+            const newExpiry = `<t:${Math.floor((Date.now() + time) / 1000)}:R>`;
+            changes.push(`Expiry: ${oldExpiry} → ${newExpiry}`);
             action.expiresAt = new Date(Date.now() + time);
           }
         }
@@ -1791,19 +1812,71 @@ client.on('interactionCreate', async (interaction) => {
       }
       
       await interaction.reply({ content: `✅ Case ${caseId} has been updated.`, ephemeral: true });
+      
+      // Log the edit
+      const logEmbed = new EmbedBuilder()
+        .setTitle('Moderation Case Edited')
+        .setColor('#FFA500')
+        .addFields(
+          { name: 'Case ID', value: caseId, inline: true },
+          { name: 'Target User', value: `<@${targetUserId}>`, inline: true },
+          { name: 'Edited By', value: `<@${interaction.user.id}>`, inline: true },
+          { name: 'Changes', value: changes.join('\n') || 'No changes recorded' }
+        )
+        .setTimestamp();
+      
+      await sendLog(interaction.guild, 'moderation', logEmbed, config);
     }
     
     if (subcommand === 'delete') {
+      if (!hasPermission(interaction.member, 'executiveMod', config)) {
+        return interaction.reply({ content: '❌ You need executive moderator permissions to delete cases.', ephemeral: true });
+      }
+      
       const caseId = interaction.options.getString('case_id');
       
-      const warning = await Warning.findOneAndDelete({ guildId: interaction.guild.id, caseId });
-      const action = await ModAction.findOneAndDelete({ guildId: interaction.guild.id, caseId });
+      const warning = await Warning.findOne({ guildId: interaction.guild.id, caseId });
+      const action = await ModAction.findOne({ guildId: interaction.guild.id, caseId });
       
       if (!warning && !action) {
         return interaction.reply({ content: '❌ Case not found.', ephemeral: true });
       }
       
+      let deletedCase = null;
+      let targetUserId = '';
+      let caseType = '';
+      let caseReason = '';
+      
+      if (warning) {
+        deletedCase = { ...warning.toObject() };
+        targetUserId = warning.userId;
+        caseType = 'Warning';
+        caseReason = warning.reason;
+        await Warning.findOneAndDelete({ guildId: interaction.guild.id, caseId });
+      } else if (action) {
+        deletedCase = { ...action.toObject() };
+        targetUserId = action.userId;
+        caseType = action.action.toUpperCase();
+        caseReason = action.reason;
+        await ModAction.findOneAndDelete({ guildId: interaction.guild.id, caseId });
+      }
+      
       await interaction.reply({ content: `✅ Case ${caseId} has been deleted.`, ephemeral: true });
+      
+      // Log the deletion
+      const logEmbed = new EmbedBuilder()
+        .setTitle('Moderation Case Deleted')
+        .setColor('#FF0000')
+        .addFields(
+          { name: 'Case ID', value: caseId, inline: true },
+          { name: 'Case Type', value: caseType, inline: true },
+          { name: 'Target User', value: `<@${targetUserId}>`, inline: true },
+          { name: 'Deleted By', value: `<@${interaction.user.id}>`, inline: true },
+          { name: 'Original Reason', value: caseReason }
+        )
+        .setTimestamp();
+      
+      await sendLog(interaction.guild, 'moderation', logEmbed, config);
     }
   }
   
@@ -1905,42 +1978,80 @@ client.on('interactionCreate', async (interaction) => {
     }
     
     const action = interaction.options.getString('action');
+    const scope = interaction.options.getString('scope');
     const channel = interaction.options.getChannel('channel') || interaction.channel;
     
     try {
       const everyoneRole = interaction.guild.roles.everyone;
       
-      if (action === 'lock') {
-        await channel.permissionOverwrites.edit(everyoneRole, { SendMessages: false });
+      if (scope === 'channel') {
+        if (action === 'lock') {
+          await channel.permissionOverwrites.edit(everyoneRole, { SendMessages: false });
+          
+          const embed = new EmbedBuilder()
+            .setTitle('Channel Locked')
+            .setColor('#FF0000')
+            .addFields(
+              { name: 'Channel', value: `<#${channel.id}>`, inline: true },
+              { name: 'Moderator', value: `<@${interaction.user.id}>`, inline: true }
+            )
+            .setTimestamp();
+          
+          await interaction.reply({ embeds: [embed] });
+          await sendLog(interaction.guild, 'moderation', embed, config);
+        } else {
+          await channel.permissionOverwrites.edit(everyoneRole, { SendMessages: null });
+          
+          const embed = new EmbedBuilder()
+            .setTitle('Channel Unlocked')
+            .setColor('#00FF00')
+            .addFields(
+              { name: 'Channel', value: `<#${channel.id}>`, inline: true },
+              { name: 'Moderator', value: `<@${interaction.user.id}>`, inline: true }
+            )
+            .setTimestamp();
+          
+          await interaction.reply({ embeds: [embed] });
+          await sendLog(interaction.guild, 'moderation', embed, config);
+        }
+      } else if (scope === 'server') {
+        await interaction.deferReply();
+        
+        const channels = interaction.guild.channels.cache.filter(c => 
+          c.type === ChannelType.GuildText && 
+          !c.name.toLowerCase().includes('announcement') &&
+          !c.name.toLowerCase().includes('rules') &&
+          !c.name.toLowerCase().includes('info')
+        );
+        
+        let lockedCount = 0;
+        for (const [id, ch] of channels) {
+          try {
+            if (action === 'lock') {
+              await ch.permissionOverwrites.edit(everyoneRole, { SendMessages: false });
+            } else {
+              await ch.permissionOverwrites.edit(everyoneRole, { SendMessages: null });
+            }
+            lockedCount++;
+          } catch (err) {
+            console.error(`Failed to ${action} ${ch.name}:`, err);
+          }
+        }
         
         const embed = new EmbedBuilder()
-          .setTitle('Channel Locked')
-          .setColor('#FF0000')
+          .setTitle(action === 'lock' ? 'Server Locked' : 'Server Unlocked')
+          .setColor(action === 'lock' ? '#FF0000' : '#00FF00')
           .addFields(
-            { name: 'Channel', value: `<#${channel.id}>`, inline: true },
-            { name: 'Moderator', value: `${interaction.user.tag}`, inline: true }
+            { name: 'Channels Affected', value: `${lockedCount}`, inline: true },
+            { name: 'Moderator', value: `<@${interaction.user.id}>`, inline: true }
           )
           .setTimestamp();
         
-        await interaction.reply({ embeds: [embed] });
-        await sendLog(interaction.guild, 'moderation', embed, config);
-      } else {
-        await channel.permissionOverwrites.edit(everyoneRole, { SendMessages: null });
-        
-        const embed = new EmbedBuilder()
-          .setTitle('Channel Unlocked')
-          .setColor('#00FF00')
-          .addFields(
-            { name: 'Channel', value: `<#${channel.id}>`, inline: true },
-            { name: 'Moderator', value: `${interaction.user.tag}`, inline: true }
-          )
-          .setTimestamp();
-        
-        await interaction.reply({ embeds: [embed] });
+        await interaction.editReply({ embeds: [embed] });
         await sendLog(interaction.guild, 'moderation', embed, config);
       }
     } catch (error) {
-      await interaction.reply({ content: '❌ Failed to lock/unlock channel.', ephemeral: true });
+      await interaction.reply({ content: '❌ Failed to lock/unlock.', ephemeral: true });
     }
   }
 
@@ -2177,11 +2288,12 @@ client.on('interactionCreate', async (interaction) => {
       const trigger = interaction.options.getString('trigger');
       const response = interaction.options.getString('response');
       const caseSensitive = interaction.options.getBoolean('case_sensitive') || false;
+      const deleteAfter = interaction.options.getInteger('delete_after') || 0;
       
-      config.autoResponders.push({ trigger, response, caseSensitive });
+      config.autoResponders.push({ trigger, response, caseSensitive, deleteAfter });
       await config.save();
       
-      await interaction.reply({ content: `✅ Auto-responder added!`, ephemeral: true });
+      await interaction.reply({ content: `✅ Auto-responder added!${deleteAfter > 0 ? ` Will delete after ${deleteAfter}s.` : ''}`, ephemeral: true });
     } else if (subcommand === 'remove') {
       const trigger = interaction.options.getString('trigger');
       
@@ -2207,7 +2319,7 @@ client.on('interactionCreate', async (interaction) => {
       for (const [index, ar] of config.autoResponders.entries()) {
         embed.addFields({
           name: `${index + 1}. Trigger: "${ar.trigger}"`,
-          value: `Response: ${ar.response}\nCase Sensitive: ${ar.caseSensitive ? 'Yes' : 'No'}`
+          value: `Response: ${ar.response}\nCase Sensitive: ${ar.caseSensitive ? 'Yes' : 'No'}\nDelete After: ${ar.deleteAfter > 0 ? ar.deleteAfter + 's' : 'Never'}`
         });
       }
       

@@ -242,6 +242,38 @@ const commands = [
     .addStringOption(option =>
       option.setName('reason')
         .setDescription('Reason for kicking')
+        .setRequired(true))
+    .addBooleanOption(option =>
+      option.setName('dm_user')
+        .setDescription('Send a DM to the user?')
+        .setRequired(false))
+    .addBooleanOption(option =>
+      option.setName('show_moderator')
+        .setDescription('Show moderator name in DM?')
+        .setRequired(false))
+    .addAttachmentOption(option =>
+      option.setName('proof1')
+        .setDescription('Evidence attachment 1')
+        .setRequired(false))
+    .addAttachmentOption(option =>
+      option.setName('proof2')
+        .setDescription('Evidence attachment 2')
+        .setRequired(false))
+    .addAttachmentOption(option =>
+      option.setName('proof3')
+        .setDescription('Evidence attachment 3')
+        .setRequired(false))
+    .addAttachmentOption(option =>
+      option.setName('proof4')
+        .setDescription('Evidence attachment 4')
+        .setRequired(false))
+    .addAttachmentOption(option =>
+      option.setName('proof5')
+        .setDescription('Evidence attachment 5')
+        .setRequired(false))
+    .addAttachmentOption(option =>
+      option.setName('proof6')
+        .setDescription('Evidence attachment 6')
         .setRequired(false)),
   
   new SlashCommandBuilder()
@@ -254,10 +286,42 @@ const commands = [
     .addStringOption(option =>
       option.setName('reason')
         .setDescription('Reason for banning')
-        .setRequired(false))
+        .setRequired(true))
     .addStringOption(option =>
       option.setName('duration')
         .setDescription('Duration for temporary ban (e.g., 1h, 1d, 7d)')
+        .setRequired(false))
+    .addBooleanOption(option =>
+      option.setName('dm_user')
+        .setDescription('Send a DM to the user?')
+        .setRequired(false))
+    .addBooleanOption(option =>
+      option.setName('show_moderator')
+        .setDescription('Show moderator name in DM?')
+        .setRequired(false))
+    .addAttachmentOption(option =>
+      option.setName('proof1')
+        .setDescription('Evidence attachment 1')
+        .setRequired(false))
+    .addAttachmentOption(option =>
+      option.setName('proof2')
+        .setDescription('Evidence attachment 2')
+        .setRequired(false))
+    .addAttachmentOption(option =>
+      option.setName('proof3')
+        .setDescription('Evidence attachment 3')
+        .setRequired(false))
+    .addAttachmentOption(option =>
+      option.setName('proof4')
+        .setDescription('Evidence attachment 4')
+        .setRequired(false))
+    .addAttachmentOption(option =>
+      option.setName('proof5')
+        .setDescription('Evidence attachment 5')
+        .setRequired(false))
+    .addAttachmentOption(option =>
+      option.setName('proof6')
+        .setDescription('Evidence attachment 6')
         .setRequired(false)),
   
   new SlashCommandBuilder()
@@ -312,6 +376,18 @@ const commands = [
     .addAttachmentOption(option =>
       option.setName('proof3')
         .setDescription('Evidence attachment 3')
+        .setRequired(false))
+    .addAttachmentOption(option =>
+      option.setName('proof4')
+        .setDescription('Evidence attachment 4')
+        .setRequired(false))
+    .addAttachmentOption(option =>
+      option.setName('proof5')
+        .setDescription('Evidence attachment 5')
+        .setRequired(false))
+    .addAttachmentOption(option =>
+      option.setName('proof6')
+        .setDescription('Evidence attachment 6')
         .setRequired(false)),
   
   new SlashCommandBuilder()
@@ -650,6 +726,9 @@ const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
 
 client.once('ready', async () => {
   console.log(`✅ ${client.user.tag} is online!`);
+  
+  // Store bot start time
+  client.readyTimestamp = Date.now();
   
   // Set custom status
   client.user.setPresence({
@@ -1013,7 +1092,9 @@ client.on('interactionCreate', async (interaction) => {
     }
     
     const user = interaction.options.getUser('user');
-    const reason = interaction.options.getString('reason') || 'No reason provided';
+    const reason = interaction.options.getString('reason');
+    const dmUser = interaction.options.getBoolean('dm_user') ?? true;
+    const showMod = interaction.options.getBoolean('show_moderator') ?? true;
     const member = interaction.guild.members.cache.get(user.id);
 
     if (!member) {
@@ -1024,7 +1105,36 @@ client.on('interactionCreate', async (interaction) => {
       return interaction.reply({ content: '❌ I cannot kick this user.', ephemeral: true });
     }
 
+    const attachments = [];
+    for (let i = 1; i <= 6; i++) {
+      const att = interaction.options.getAttachment(`proof${i}`);
+      if (att) attachments.push(att.url);
+    }
+
     try {
+      // Send DM before kicking
+      if (dmUser) {
+        try {
+          const dmEmbed = new EmbedBuilder()
+            .setTitle(`You have been kicked from ${interaction.guild.name}`)
+            .setColor('#FF6B6B')
+            .addFields({ name: 'Reason', value: reason })
+            .setTimestamp();
+          
+          if (showMod) {
+            dmEmbed.addFields({ name: 'Moderator', value: interaction.user.tag });
+          }
+          
+          if (attachments.length > 0) {
+            dmEmbed.setImage(attachments[0]);
+          }
+          
+          await user.send({ embeds: [dmEmbed] });
+        } catch (e) {
+          // User has DMs disabled
+        }
+      }
+
       await member.kick(reason);
       
       // Save to database
@@ -1041,11 +1151,22 @@ client.on('interactionCreate', async (interaction) => {
         .setTitle('Member Kicked')
         .setColor('#FF6B6B')
         .addFields(
-          { name: 'User', value: `${user.tag}`, inline: true },
-          { name: 'Moderator', value: `${interaction.user.tag}`, inline: true },
+          { name: 'User', value: `<@${user.id}> (${user.id})`, inline: true },
+          { name: 'Moderator', value: `<@${interaction.user.id}>`, inline: true },
           { name: 'Reason', value: reason }
         )
         .setTimestamp();
+      
+      if (attachments.length > 0) {
+        embed.addFields({ name: 'Evidence', value: attachments.map((a, i) => `[Attachment ${i + 1}](${a})`).join('\n') });
+        embed.setImage(attachments[0]);
+      }
+
+      if (dmUser) {
+        embed.setFooter({ text: showMod ? 'DM sent with moderator name' : 'DM sent anonymously' });
+      } else {
+        embed.setFooter({ text: 'No DM sent' });
+      }
       
       await interaction.reply({ embeds: [embed] });
       await sendLog(interaction.guild, 'moderation', embed, config);
@@ -1060,15 +1181,53 @@ client.on('interactionCreate', async (interaction) => {
     }
     
     const user = interaction.options.getUser('user');
-    const reason = interaction.options.getString('reason') || 'No reason provided';
+    const reason = interaction.options.getString('reason');
     const duration = interaction.options.getString('duration');
+    const dmUser = interaction.options.getBoolean('dm_user') ?? true;
+    const showMod = interaction.options.getBoolean('show_moderator') ?? true;
     const member = interaction.guild.members.cache.get(user.id);
 
     if (member && !member.bannable) {
       return interaction.reply({ content: '❌ I cannot ban this user.', ephemeral: true });
     }
 
+    const attachments = [];
+    for (let i = 1; i <= 6; i++) {
+      const att = interaction.options.getAttachment(`proof${i}`);
+      if (att) attachments.push(att.url);
+    }
+
     try {
+      // Send DM before banning
+      if (dmUser) {
+        try {
+          const dmEmbed = new EmbedBuilder()
+            .setTitle(`You have been banned from ${interaction.guild.name}`)
+            .setColor('#FF0000')
+            .addFields({ name: 'Reason', value: reason })
+            .setTimestamp();
+          
+          if (showMod) {
+            dmEmbed.addFields({ name: 'Moderator', value: interaction.user.tag });
+          }
+
+          if (duration) {
+            const time = parseDuration(duration);
+            if (time) {
+              dmEmbed.addFields({ name: 'Duration', value: `This ban will expire in ${formatDuration(time)}` });
+            }
+          }
+          
+          if (attachments.length > 0) {
+            dmEmbed.setImage(attachments[0]);
+          }
+          
+          await user.send({ embeds: [dmEmbed] });
+        } catch (e) {
+          // User has DMs disabled
+        }
+      }
+
       await interaction.guild.bans.create(user.id, { reason });
       
       // Handle temporary ban
@@ -1103,14 +1262,25 @@ client.on('interactionCreate', async (interaction) => {
         .setTitle('Member Banned')
         .setColor('#FF0000')
         .addFields(
-          { name: 'User', value: `${user.tag}`, inline: true },
-          { name: 'Moderator', value: `${interaction.user.tag}`, inline: true },
+          { name: 'User', value: `<@${user.id}> (${user.id})`, inline: true },
+          { name: 'Moderator', value: `<@${interaction.user.id}>`, inline: true },
           { name: 'Reason', value: reason }
         )
         .setTimestamp();
       
       if (expiresAt) {
         embed.addFields({ name: 'Duration', value: `Expires <t:${Math.floor(expiresAt.getTime() / 1000)}:R>` });
+      }
+
+      if (attachments.length > 0) {
+        embed.addFields({ name: 'Evidence', value: attachments.map((a, i) => `[Attachment ${i + 1}](${a})`).join('\n') });
+        embed.setImage(attachments[0]);
+      }
+
+      if (dmUser) {
+        embed.setFooter({ text: showMod ? 'DM sent with moderator name' : 'DM sent anonymously' });
+      } else {
+        embed.setFooter({ text: 'No DM sent' });
       }
       
       await interaction.reply({ embeds: [embed] });
@@ -1155,9 +1325,9 @@ client.on('interactionCreate', async (interaction) => {
         .setTitle('Member Timed Out')
         .setColor('#FFA500')
         .addFields(
-          { name: 'User', value: `${user.tag}`, inline: true },
+          { name: 'User', value: `<@${user.id}> (${user.id})`, inline: true },
           { name: 'Duration', value: `${duration} minutes`, inline: true },
-          { name: 'Moderator', value: `${interaction.user.tag}`, inline: true },
+          { name: 'Moderator', value: `<@${interaction.user.id}>`, inline: true },
           { name: 'Reason', value: reason }
         )
         .setTimestamp();
@@ -1181,7 +1351,7 @@ client.on('interactionCreate', async (interaction) => {
     const showMod = interaction.options.getBoolean('show_moderator') ?? true;
     
     const attachments = [];
-    for (let i = 1; i <= 3; i++) {
+    for (let i = 1; i <= 6; i++) {
       const att = interaction.options.getAttachment(`proof${i}`);
       if (att) attachments.push(att.url);
     }
@@ -1208,8 +1378,8 @@ client.on('interactionCreate', async (interaction) => {
       .setTitle('Member Warned')
       .setColor('#FFFF00')
       .addFields(
-        { name: 'User', value: `${user.tag}`, inline: true },
-        { name: 'Moderator', value: `${interaction.user.tag}`, inline: true },
+        { name: 'User', value: `<@${user.id}> (${user.id})`, inline: true },
+        { name: 'Moderator', value: `<@${interaction.user.id}>`, inline: true },
         { name: 'Reason', value: reason }
       )
       .setTimestamp();
@@ -1221,6 +1391,12 @@ client.on('interactionCreate', async (interaction) => {
     if (attachments.length > 0) {
       embed.addFields({ name: 'Evidence', value: attachments.map((a, i) => `[Attachment ${i + 1}](${a})`).join('\n') });
       embed.setImage(attachments[0]);
+    }
+
+    if (dmUser) {
+      embed.setFooter({ text: showMod ? 'DM sent with moderator name' : 'DM sent anonymously' });
+    } else {
+      embed.setFooter({ text: 'No DM sent' });
     }
     
     await interaction.reply({ embeds: [embed] });
@@ -1482,6 +1658,28 @@ client.on('interactionCreate', async (interaction) => {
       await config.save();
       
       await interaction.reply({ content: `✅ Set ${subcommand} log channel to ${channel}`, ephemeral: true });
+    }
+    
+    if (group === 'webhook') {
+      if (subcommand === 'remove') {
+        const type = interaction.options.getString('type');
+        config.logWebhooks[type] = null;
+        await config.save();
+        
+        await interaction.reply({ content: `✅ Removed ${type} webhook. Logs will now be sent directly to the channel.`, ephemeral: true });
+      } else {
+        const webhookUrl = interaction.options.getString('webhook_url');
+        
+        // Validate webhook URL
+        if (!webhookUrl.startsWith('https://discord.com/api/webhooks/') && !webhookUrl.startsWith('https://discordapp.com/api/webhooks/')) {
+          return interaction.reply({ content: '❌ Invalid webhook URL. Must be a Discord webhook URL.', ephemeral: true });
+        }
+        
+        config.logWebhooks[subcommand] = webhookUrl;
+        await config.save();
+        
+        await interaction.reply({ content: `✅ Set ${subcommand} log webhook! Logs will now be sent via webhook to prevent rate limiting.`, ephemeral: true });
+      }
     }
     
     if (group === 'welcome') {

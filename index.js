@@ -79,12 +79,14 @@ const guildConfigSchema = new mongoose.Schema({
   autoResponders: [{
     trigger: String,
     response: String,
-    caseSensitive: { type: Boolean, default: false }
+    caseSensitive: { type: Boolean, default: false },
+    deleteAfter: { type: Number, default: 0 } // 0 means don't delete
   }]
 });
 
 // Warning Schema
 const warningSchema = new mongoose.Schema({
+  caseId: String,
   guildId: String,
   userId: String,
   moderatorId: String,
@@ -93,19 +95,22 @@ const warningSchema = new mongoose.Schema({
   expiresAt: Date,
   attachments: [String],
   dmSent: Boolean,
-  showModerator: Boolean
+  showModerator: Boolean,
+  expired: { type: Boolean, default: false }
 });
 
 // Moderation Action Schema
 const modActionSchema = new mongoose.Schema({
+  caseId: String,
   guildId: String,
   userId: String,
   moderatorId: String,
-  action: String, // 'kick', 'ban', 'timeout', 'warn'
+  action: String, // 'kick', 'ban', 'timeout', 'warn', 'unban'
   reason: String,
   duration: Number,
   timestamp: { type: Date, default: Date.now },
-  expiresAt: Date
+  expiresAt: Date,
+  expired: { type: Boolean, default: false }
 });
 
 // Temporary Ban Schema
@@ -142,6 +147,11 @@ async function getGuildConfig(guildId) {
     await config.save();
   }
   return config;
+}
+
+async function generateCaseId(guildId) {
+  const count = await ModAction.countDocuments({ guildId }) + await Warning.countDocuments({ guildId });
+  return `${guildId.slice(-4)}-${(count + 1).toString().padStart(4, '0')}`;
 }
 
 function hasPermission(member, requiredRole, config) {
@@ -343,6 +353,38 @@ const commands = [
         .setRequired(false)),
   
   new SlashCommandBuilder()
+    .setName('unban')
+    .setDescription('Unban a user from the server')
+    .addStringOption(option =>
+      option.setName('user_id')
+        .setDescription('The user ID to unban')
+        .setRequired(true))
+    .addStringOption(option =>
+      option.setName('reason')
+        .setDescription('Reason for unbanning')
+        .setRequired(true))
+    .addBooleanOption(option =>
+      option.setName('dm_user')
+        .setDescription('Send a DM to the user?')
+        .setRequired(false))
+    .addBooleanOption(option =>
+      option.setName('show_moderator')
+        .setDescription('Show moderator name in DM?')
+        .setRequired(false)),
+  
+  new SlashCommandBuilder()
+    .setName('untimeout')
+    .setDescription('Remove timeout from a member')
+    .addUserOption(option =>
+      option.setName('user')
+        .setDescription('The user to remove timeout from')
+        .setRequired(true))
+    .addStringOption(option =>
+      option.setName('reason')
+        .setDescription('Reason for removing timeout')
+        .setRequired(false)),
+  
+  new SlashCommandBuilder()
     .setName('warn')
     .setDescription('Warn a member')
     .addUserOption(option =>
@@ -391,12 +433,37 @@ const commands = [
         .setRequired(false)),
   
   new SlashCommandBuilder()
-    .setName('warns')
-    .setDescription('View warning history for a user')
-    .addStringOption(option =>
-      option.setName('user_id')
-        .setDescription('User ID or mention')
-        .setRequired(true)),
+    .setName('moderations')
+    .setDescription('View or edit moderation history')
+    .addSubcommand(sub =>
+      sub.setName('view')
+        .setDescription('View moderation history for a user')
+        .addStringOption(option =>
+          option.setName('user_id')
+            .setDescription('User ID or mention')
+            .setRequired(true)))
+    .addSubcommand(sub =>
+      sub.setName('edit')
+        .setDescription('Edit a moderation case')
+        .addStringOption(option =>
+          option.setName('case_id')
+            .setDescription('The case ID to edit')
+            .setRequired(true))
+        .addStringOption(option =>
+          option.setName('reason')
+            .setDescription('New reason')
+            .setRequired(false))
+        .addStringOption(option =>
+          option.setName('duration')
+            .setDescription('New duration (e.g., 7d, 30d)')
+            .setRequired(false)))
+    .addSubcommand(sub =>
+      sub.setName('delete')
+        .setDescription('Delete a moderation case')
+        .addStringOption(option =>
+          option.setName('case_id')
+            .setDescription('The case ID to delete')
+            .setRequired(true))),
   
   new SlashCommandBuilder()
     .setName('purge')
@@ -420,7 +487,7 @@ const commands = [
   
   new SlashCommandBuilder()
     .setName('lockdown')
-    .setDescription('Lock or unlock a channel')
+    .setDescription('Lock or unlock channels')
     .addStringOption(option =>
       option.setName('action')
         .setDescription('Lock or unlock')
@@ -429,9 +496,17 @@ const commands = [
           { name: 'Lock', value: 'lock' },
           { name: 'Unlock', value: 'unlock' }
         ))
+    .addStringOption(option =>
+      option.setName('scope')
+        .setDescription('What to lock')
+        .setRequired(true)
+        .addChoices(
+          { name: 'Current Channel', value: 'channel' },
+          { name: 'Entire Server', value: 'server' }
+        ))
     .addChannelOption(option =>
       option.setName('channel')
-        .setDescription('Channel to lock/unlock (defaults to current)')
+        .setDescription('Specific channel (only for Current Channel scope)')
         .setRequired(false)),
   
   new SlashCommandBuilder()
@@ -708,7 +783,13 @@ const commands = [
         .addBooleanOption(option =>
           option.setName('case_sensitive')
             .setDescription('Case sensitive matching?')
-            .setRequired(false)))
+            .setRequired(false))
+        .addIntegerOption(option =>
+          option.setName('delete_after')
+            .setDescription('Delete response after X seconds (0 = never)')
+            .setRequired(false)
+            .setMinValue(0)
+            .setMaxValue(300)))
     .addSubcommand(sub =>
       sub.setName('remove')
         .setDescription('Remove an auto-responder')
@@ -747,9 +828,13 @@ client.once('ready', async () => {
     console.error(error);
   }
   
-  // Start temp ban check interval (every 15 minutes)
-  setInterval(checkTempBans, 15 * 60 * 1000);
+  // Start temp ban check interval (every 5 minutes)
+  setInterval(checkTempBans, 5 * 60 * 1000);
   checkTempBans(); // Run immediately on startup
+  
+  // Start warning expiration check (every 5 minutes)
+  setInterval(checkExpiredWarnings, 5 * 60 * 1000);
+  checkExpiredWarnings();
 });
 
 // ==================== TEMP BAN CHECKER ====================
@@ -771,6 +856,24 @@ async function checkTempBans() {
     }
   } catch (err) {
     console.error('Error checking temp bans:', err);
+  }
+}
+
+// ==================== WARNING EXPIRATION CHECKER ====================
+async function checkExpiredWarnings() {
+  try {
+    const expiredWarnings = await Warning.find({ 
+      expiresAt: { $lte: new Date(), $ne: null },
+      expired: false
+    });
+    
+    for (const warning of expiredWarnings) {
+      warning.expired = true;
+      await warning.save();
+      console.log(`Expired warning ${warning.caseId}`);
+    }
+  } catch (err) {
+    console.error('Error checking expired warnings:', err);
   }
 }
 
@@ -874,7 +977,14 @@ client.on('messageDelete', async (message) => {
       .setTimestamp();
     
     if (message.attachments.size > 0) {
-      embed.addFields({ name: 'Attachments', value: message.attachments.map(a => a.url).join('\n') });
+      const attachmentLinks = message.attachments.map(a => `[${a.name}](${a.url})`).join('\n');
+      embed.addFields({ name: 'Attachments', value: attachmentLinks });
+      
+      // Add first image as embed image
+      const firstImage = message.attachments.find(a => a.contentType?.startsWith('image/'));
+      if (firstImage) {
+        embed.setImage(firstImage.url);
+      }
     }
     
     await sendLog(message.guild, 'message', embed, config);
@@ -893,7 +1003,18 @@ client.on('messageCreate', async (message) => {
     const trigger = autoResp.caseSensitive ? autoResp.trigger : autoResp.trigger.toLowerCase();
     
     if (content.includes(trigger)) {
-      await message.reply(autoResp.response);
+      const reply = await message.reply(autoResp.response);
+      
+      // Delete after X seconds if configured
+      if (autoResp.deleteAfter > 0) {
+        setTimeout(async () => {
+          try {
+            await reply.delete();
+          } catch (err) {
+            // Message might already be deleted
+          }
+        }, autoResp.deleteAfter * 1000);
+      }
       break;
     }
   }
@@ -1071,6 +1192,21 @@ client.on('interactionCreate', async (interaction) => {
         { name: 'Joined Server', value: `<t:${Math.floor(member.joinedTimestamp / 1000)}:F>`, inline: false },
         { name: 'Roles', value: member.roles.cache.filter(r => r.id !== interaction.guild.id).map(r => r.toString()).join(', ') || 'None', inline: false }
       );
+      
+      // Add key permissions
+      const keyPerms = [];
+      if (member.permissions.has(PermissionFlagsBits.Administrator)) keyPerms.push('Administrator');
+      if (member.permissions.has(PermissionFlagsBits.ManageGuild)) keyPerms.push('Manage Server');
+      if (member.permissions.has(PermissionFlagsBits.ManageRoles)) keyPerms.push('Manage Roles');
+      if (member.permissions.has(PermissionFlagsBits.ManageChannels)) keyPerms.push('Manage Channels');
+      if (member.permissions.has(PermissionFlagsBits.KickMembers)) keyPerms.push('Kick Members');
+      if (member.permissions.has(PermissionFlagsBits.BanMembers)) keyPerms.push('Ban Members');
+      if (member.permissions.has(PermissionFlagsBits.ModerateMembers)) keyPerms.push('Timeout Members');
+      if (member.permissions.has(PermissionFlagsBits.ManageMessages)) keyPerms.push('Manage Messages');
+      
+      if (keyPerms.length > 0) {
+        embed.addFields({ name: 'Key Permissions', value: keyPerms.join(', '), inline: false });
+      }
     }
     
     await interaction.reply({ embeds: [embed] });
@@ -1152,7 +1288,9 @@ client.on('interactionCreate', async (interaction) => {
       await member.kick(reason);
       
       // Save to database
+      const caseId = await generateCaseId(interaction.guild.id);
       const action = new ModAction({
+        caseId,
         guildId: interaction.guild.id,
         userId: user.id,
         moderatorId: interaction.user.id,
@@ -1165,6 +1303,7 @@ client.on('interactionCreate', async (interaction) => {
         .setTitle('Member Kicked')
         .setColor('#FF6B6B')
         .addFields(
+          { name: 'Case ID', value: caseId, inline: true },
           { name: 'User', value: `<@${user.id}> (${user.id})`, inline: true },
           { name: 'Moderator', value: `<@${interaction.user.id}>`, inline: true },
           { name: 'Reason', value: reason }
@@ -1262,7 +1401,9 @@ client.on('interactionCreate', async (interaction) => {
       }
       
       // Save to database
+      const caseId = await generateCaseId(interaction.guild.id);
       const action = new ModAction({
+        caseId,
         guildId: interaction.guild.id,
         userId: user.id,
         moderatorId: interaction.user.id,
@@ -1276,6 +1417,7 @@ client.on('interactionCreate', async (interaction) => {
         .setTitle('Member Banned')
         .setColor('#FF0000')
         .addFields(
+          { name: 'Case ID', value: caseId, inline: true },
           { name: 'User', value: `<@${user.id}> (${user.id})`, inline: true },
           { name: 'Moderator', value: `<@${interaction.user.id}>`, inline: true },
           { name: 'Reason', value: reason }
@@ -1325,7 +1467,9 @@ client.on('interactionCreate', async (interaction) => {
     try {
       await member.timeout(duration * 60 * 1000, reason);
       
+      const caseId = await generateCaseId(interaction.guild.id);
       const action = new ModAction({
+        caseId,
         guildId: interaction.guild.id,
         userId: user.id,
         moderatorId: interaction.user.id,
@@ -1339,6 +1483,7 @@ client.on('interactionCreate', async (interaction) => {
         .setTitle('Member Timed Out')
         .setColor('#FFA500')
         .addFields(
+          { name: 'Case ID', value: caseId, inline: true },
           { name: 'User', value: `<@${user.id}> (${user.id})`, inline: true },
           { name: 'Duration', value: `${duration} minutes`, inline: true },
           { name: 'Moderator', value: `<@${interaction.user.id}>`, inline: true },
@@ -1376,7 +1521,9 @@ client.on('interactionCreate', async (interaction) => {
       if (time) expiresAt = new Date(Date.now() + time);
     }
     
+    const caseId = await generateCaseId(interaction.guild.id);
     const warning = new Warning({
+      caseId,
       guildId: interaction.guild.id,
       userId: user.id,
       moderatorId: interaction.user.id,
@@ -1392,6 +1539,7 @@ client.on('interactionCreate', async (interaction) => {
       .setTitle('Member Warned')
       .setColor('#FFFF00')
       .addFields(
+        { name: 'Case ID', value: caseId, inline: true },
         { name: 'User', value: `<@${user.id}> (${user.id})`, inline: true },
         { name: 'Moderator', value: `<@${interaction.user.id}>`, inline: true },
         { name: 'Reason', value: reason }
@@ -1436,6 +1584,226 @@ client.on('interactionCreate', async (interaction) => {
       } catch (e) {
         await interaction.followUp({ content: '⚠️ Could not DM the user.', ephemeral: true });
       }
+    }
+  }
+  
+  if (commandName === 'unban') {
+    if (!hasPermission(interaction.member, 'mod', config)) {
+      return interaction.reply({ content: '❌ You need moderator permissions.', ephemeral: true });
+    }
+    
+    const userId = interaction.options.getString('user_id').replace(/[<@!>]/g, '');
+    const reason = interaction.options.getString('reason');
+    const dmUser = interaction.options.getBoolean('dm_user') ?? true;
+    const showMod = interaction.options.getBoolean('show_moderator') ?? true;
+
+    try {
+      await interaction.guild.bans.remove(userId, reason);
+      
+      // Remove temp ban if exists
+      await TempBan.deleteOne({ guildId: interaction.guild.id, userId });
+      
+      // Save to database
+      const caseId = await generateCaseId(interaction.guild.id);
+      const action = new ModAction({
+        caseId,
+        guildId: interaction.guild.id,
+        userId,
+        moderatorId: interaction.user.id,
+        action: 'unban',
+        reason
+      });
+      await action.save();
+      
+      const embed = new EmbedBuilder()
+        .setTitle('Member Unbanned')
+        .setColor('#00FF00')
+        .addFields(
+          { name: 'Case ID', value: caseId, inline: true },
+          { name: 'User ID', value: userId, inline: true },
+          { name: 'Moderator', value: `<@${interaction.user.id}>`, inline: true },
+          { name: 'Reason', value: reason }
+        )
+        .setTimestamp();
+      
+      if (dmUser) {
+        embed.setFooter({ text: showMod ? 'DM sent with moderator name' : 'DM sent anonymously' });
+      } else {
+        embed.setFooter({ text: 'No DM sent' });
+      }
+      
+      await interaction.reply({ embeds: [embed] });
+      await sendLog(interaction.guild, 'moderation', embed, config);
+      
+      // Try to DM user
+      if (dmUser) {
+        try {
+          const user = await client.users.fetch(userId);
+          const dmEmbed = new EmbedBuilder()
+            .setTitle(`You have been unbanned from ${interaction.guild.name}`)
+            .setColor('#00FF00')
+            .addFields({ name: 'Reason', value: reason })
+            .setTimestamp();
+          
+          if (showMod) {
+            dmEmbed.addFields({ name: 'Moderator', value: interaction.user.tag });
+          }
+          
+          await user.send({ embeds: [dmEmbed] });
+        } catch (e) {
+          // User has DMs disabled or couldn't fetch
+        }
+      }
+    } catch (error) {
+      await interaction.reply({ content: '❌ Failed to unban user. They may not be banned.', ephemeral: true });
+    }
+  }
+
+  if (commandName === 'untimeout') {
+    if (!hasPermission(interaction.member, 'mod', config)) {
+      return interaction.reply({ content: '❌ You need moderator permissions.', ephemeral: true });
+    }
+    
+    const user = interaction.options.getUser('user');
+    const reason = interaction.options.getString('reason') || 'No reason provided';
+    const member = interaction.guild.members.cache.get(user.id);
+
+    if (!member) {
+      return interaction.reply({ content: '❌ User not found in this server.', ephemeral: true });
+    }
+
+    if (!member.isCommunicationDisabled()) {
+      return interaction.reply({ content: '❌ This user is not timed out.', ephemeral: true });
+    }
+
+    try {
+      await member.timeout(null, reason);
+      
+      const embed = new EmbedBuilder()
+        .setTitle('Timeout Removed')
+        .setColor('#00FF00')
+        .addFields(
+          { name: 'User', value: `<@${user.id}> (${user.id})`, inline: true },
+          { name: 'Moderator', value: `<@${interaction.user.id}>`, inline: true },
+          { name: 'Reason', value: reason }
+        )
+        .setTimestamp();
+      
+      await interaction.reply({ embeds: [embed] });
+      await sendLog(interaction.guild, 'moderation', embed, config);
+    } catch (error) {
+      await interaction.reply({ content: '❌ Failed to remove timeout.', ephemeral: true });
+    }
+  }
+
+  if (commandName === 'moderations') {
+    if (!hasPermission(interaction.member, 'mod', config)) {
+      return interaction.reply({ content: '❌ You need moderator permissions.', ephemeral: true });
+    }
+    
+    const subcommand = interaction.options.getSubcommand();
+    
+    if (subcommand === 'view') {
+      const userIdInput = interaction.options.getString('user_id');
+      const userId = userIdInput.replace(/[<@!>]/g, '');
+      
+      const warnings = await Warning.find({ guildId: interaction.guild.id, userId }).sort({ timestamp: -1 });
+      const actions = await ModAction.find({ guildId: interaction.guild.id, userId }).sort({ timestamp: -1 });
+      
+      if (warnings.length === 0 && actions.length === 0) {
+        return interaction.reply({ content: '❌ No moderations found for this user.', ephemeral: true });
+      }
+      
+      let user;
+      try {
+        user = await client.users.fetch(userId);
+      } catch (e) {
+        user = { tag: `Unknown User (${userId})` };
+      }
+      
+      const embed = new EmbedBuilder()
+        .setTitle(`Moderation History for ${user.tag}`)
+        .setColor('#FFA500')
+        .setTimestamp();
+      
+      const allRecords = [
+        ...warnings.map(w => ({ type: 'warn', data: w })),
+        ...actions.map(a => ({ type: 'action', data: a }))
+      ].sort((a, b) => b.data.timestamp - a.data.timestamp).slice(0, 10);
+      
+      for (const record of allRecords) {
+        if (record.type === 'warn') {
+          const w = record.data;
+          const expiredText = w.expired ? ' **(EXPIRED)**' : '';
+          embed.addFields({
+            name: `⚠️ Warning - Case ${w.caseId} - <t:${Math.floor(w.timestamp.getTime() / 1000)}:R>${expiredText}`,
+            value: `**Reason:** ${w.reason}\n**Moderator:** <@${w.moderatorId}>${w.expiresAt && !w.expired ? `\n**Expires:** <t:${Math.floor(w.expiresAt.getTime() / 1000)}:R>` : ''}`
+          });
+        } else {
+          const a = record.data;
+          const emoji = { kick: '🥾', ban: '🔨', timeout: '⏰', unban: '✅' }[a.action] || '📝';
+          embed.addFields({
+            name: `${emoji} ${a.action.toUpperCase()} - Case ${a.caseId} - <t:${Math.floor(a.timestamp.getTime() / 1000)}:R>`,
+            value: `**Reason:** ${a.reason}\n**Moderator:** <@${a.moderatorId}>`
+          });
+        }
+      }
+      
+      await interaction.reply({ embeds: [embed] });
+    }
+    
+    if (subcommand === 'edit') {
+      const caseId = interaction.options.getString('case_id');
+      const newReason = interaction.options.getString('reason');
+      const newDuration = interaction.options.getString('duration');
+      
+      // Try to find in warnings first
+      let warning = await Warning.findOne({ guildId: interaction.guild.id, caseId });
+      let action = null;
+      
+      if (!warning) {
+        action = await ModAction.findOne({ guildId: interaction.guild.id, caseId });
+      }
+      
+      if (!warning && !action) {
+        return interaction.reply({ content: '❌ Case not found.', ephemeral: true });
+      }
+      
+      if (warning) {
+        if (newReason) warning.reason = newReason;
+        if (newDuration) {
+          const time = parseDuration(newDuration);
+          if (time) {
+            warning.expiresAt = new Date(Date.now() + time);
+            warning.expired = false;
+          }
+        }
+        await warning.save();
+      } else if (action) {
+        if (newReason) action.reason = newReason;
+        if (newDuration && (action.action === 'ban' || action.action === 'timeout')) {
+          const time = parseDuration(newDuration);
+          if (time) {
+            action.expiresAt = new Date(Date.now() + time);
+          }
+        }
+        await action.save();
+      }
+      
+      await interaction.reply({ content: `✅ Case ${caseId} has been updated.`, ephemeral: true });
+    }
+    
+    if (subcommand === 'delete') {
+      const caseId = interaction.options.getString('case_id');
+      
+      const warning = await Warning.findOneAndDelete({ guildId: interaction.guild.id, caseId });
+      const action = await ModAction.findOneAndDelete({ guildId: interaction.guild.id, caseId });
+      
+      if (!warning && !action) {
+        return interaction.reply({ content: '❌ Case not found.', ephemeral: true });
+      }
+      
+      await interaction.reply({ content: `✅ Case ${caseId} has been deleted.`, ephemeral: true });
     }
   }
   

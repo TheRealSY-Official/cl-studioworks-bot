@@ -1213,8 +1213,8 @@ client.on('interactionCreate', async (interaction) => {
   }
   
   if (commandName === 'say') {
-    if (!hasPermission(interaction.member, 'mod', config)) {
-      return interaction.reply({ content: '❌ You need moderator permissions.', ephemeral: true });
+    if (!hasPermission(interaction.member, 'admin', config)) {
+      return interaction.reply({ content: '❌ You need admin permissions.', ephemeral: true });
     }
     
     const modal = new ModalBuilder()
@@ -1588,8 +1588,8 @@ client.on('interactionCreate', async (interaction) => {
   }
   
   if (commandName === 'unban') {
-    if (!hasPermission(interaction.member, 'executiveMod', config)) {
-      return interaction.reply({ content: '❌ You need executive moderator permissions.', ephemeral: true });
+    if (!hasPermission(interaction.member, 'admin', config)) {
+      return interaction.reply({ content: '❌ You need admin permissions.', ephemeral: true });
     }
     
     const userId = interaction.options.getString('user_id').replace(/[<@!>]/g, '');
@@ -1753,8 +1753,8 @@ client.on('interactionCreate', async (interaction) => {
     }
     
     if (subcommand === 'edit') {
-      if (!hasPermission(interaction.member, 'executiveMod', config)) {
-        return interaction.reply({ content: '❌ You need executive moderator permissions to edit cases.', ephemeral: true });
+      if (!hasPermission(interaction.member, 'admin', config)) {
+        return interaction.reply({ content: '❌ You need admin permissions to edit cases.', ephemeral: true });
       }
       
       const caseId = interaction.options.getString('case_id');
@@ -1829,8 +1829,8 @@ client.on('interactionCreate', async (interaction) => {
     }
     
     if (subcommand === 'delete') {
-      if (!hasPermission(interaction.member, 'executiveMod', config)) {
-        return interaction.reply({ content: '❌ You need executive moderator permissions to delete cases.', ephemeral: true });
+      if (!hasPermission(interaction.member, 'admin', config)) {
+        return interaction.reply({ content: '❌ You need admin permissions to delete cases.', ephemeral: true });
       }
       
       const caseId = interaction.options.getString('case_id');
@@ -1933,8 +1933,8 @@ client.on('interactionCreate', async (interaction) => {
   }
 
   if (commandName === 'purge') {
-    if (!hasPermission(interaction.member, 'mod', config)) {
-      return interaction.reply({ content: '❌ You need moderator permissions.', ephemeral: true });
+    if (!hasPermission(interaction.member, 'executiveMod', config)) {
+      return interaction.reply({ content: '❌ You need executive moderator permissions.', ephemeral: true });
     }
     
     const amount = interaction.options.getInteger('amount');
@@ -1948,8 +1948,8 @@ client.on('interactionCreate', async (interaction) => {
   }
   
   if (commandName === 'slowmode') {
-    if (!hasPermission(interaction.member, 'mod', config)) {
-      return interaction.reply({ content: '❌ You need moderator permissions.', ephemeral: true });
+    if (!hasPermission(interaction.member, 'executiveMod', config)) {
+      return interaction.reply({ content: '❌ You need executive moderator permissions.', ephemeral: true });
     }
     
     const seconds = interaction.options.getInteger('seconds');
@@ -1973,8 +1973,8 @@ client.on('interactionCreate', async (interaction) => {
   }
   
   if (commandName === 'lockdown') {
-    if (!hasPermission(interaction.member, 'executiveMod', config)) {
-      return interaction.reply({ content: '❌ You need executive moderator permissions.', ephemeral: true });
+    if (!hasPermission(interaction.member, 'admin', config)) {
+      return interaction.reply({ content: '❌ You need admin permissions.', ephemeral: true });
     }
     
     const action = interaction.options.getString('action');
@@ -2058,8 +2058,8 @@ client.on('interactionCreate', async (interaction) => {
   // ==================== GIVEAWAY COMMANDS ====================
 
   if (commandName === 'gstart') {
-    if (!hasPermission(interaction.member, 'mod', config)) {
-      return interaction.reply({ content: '❌ You need moderator permissions.', ephemeral: true });
+    if (!hasPermission(interaction.member, 'admin', config)) {
+      return interaction.reply({ content: '❌ You need admin permissions.', ephemeral: true });
     }
     
     const duration = interaction.options.getString('duration');
@@ -2110,8 +2110,8 @@ client.on('interactionCreate', async (interaction) => {
   }
 
   if (commandName === 'greroll') {
-    if (!hasPermission(interaction.member, 'mod', config)) {
-      return interaction.reply({ content: '❌ You need moderator permissions.', ephemeral: true });
+    if (!hasPermission(interaction.member, 'admin', config)) {
+      return interaction.reply({ content: '❌ You need admin permissions.', ephemeral: true });
     }
     
     const messageId = interaction.options.getString('message_id');
@@ -2235,8 +2235,8 @@ client.on('interactionCreate', async (interaction) => {
   // ==================== STICKY COMMANDS ====================
 
   if (commandName === 'sticky') {
-    if (!hasPermission(interaction.member, 'mod', config)) {
-      return interaction.reply({ content: '❌ You need moderator permissions.', ephemeral: true });
+    if (!hasPermission(interaction.member, 'admin', config)) {
+      return interaction.reply({ content: '❌ You need admin permissions.', ephemeral: true });
     }
     
     const subcommand = interaction.options.getSubcommand();
@@ -2278,8 +2278,8 @@ client.on('interactionCreate', async (interaction) => {
   // ==================== AUTO-RESPONDER COMMANDS ====================
 
   if (commandName === 'autorespond') {
-    if (!hasPermission(interaction.member, 'mod', config)) {
-      return interaction.reply({ content: '❌ You need moderator permissions.', ephemeral: true });
+    if (!hasPermission(interaction.member, 'admin', config)) {
+      return interaction.reply({ content: '❌ You need admin permissions.', ephemeral: true });
     }
     
     const subcommand = interaction.options.getSubcommand();

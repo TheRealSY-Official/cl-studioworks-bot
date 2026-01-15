@@ -123,10 +123,21 @@ const tempBanSchema = new mongoose.Schema({
   createdAt: { type: Date, default: Date.now }
 });
 
+// User Level Schema
+const userLevelSchema = new mongoose.Schema({
+  guildId: String,
+  userId: String,
+  xp: { type: Number, default: 0 },
+  level: { type: Number, default: 1 },
+  totalMessages: { type: Number, default: 0 },
+  lastXpGain: { type: Date, default: null }
+});
+
 const GuildConfig = mongoose.model('GuildConfig', guildConfigSchema);
 const Warning = mongoose.model('Warning', warningSchema);
 const ModAction = mongoose.model('ModAction', modActionSchema);
 const TempBan = mongoose.model('TempBan', tempBanSchema);
+const UserLevel = mongoose.model('UserLevel', userLevelSchema);
 
 // ==================== MONGODB CONNECTION ====================
 mongoose.connect(process.env.MONGODB_URI).then(() => {
@@ -219,6 +230,27 @@ function formatDuration(ms) {
   if (hours > 0) return `${hours}h ${minutes % 60}m`;
   if (minutes > 0) return `${minutes}m ${seconds % 60}s`;
   return `${seconds}s`;
+}
+
+function calculateXPForLevel(level) {
+  // Easy start, gets progressively harder
+  // Level 1->2: 100 XP
+  // Level 2->3: 200 XP
+  // Level 3->4: 300 XP
+  // Formula: level * 100
+  return level * 100;
+}
+
+function getLevelFromXP(xp) {
+  let level = 1;
+  let totalXpNeeded = 0;
+  
+  while (totalXpNeeded + calculateXPForLevel(level) <= xp) {
+    totalXpNeeded += calculateXPForLevel(level);
+    level++;
+  }
+  
+  return { level, currentLevelXP: xp - totalXpNeeded, xpNeeded: calculateXPForLevel(level) };
 }
 
 // ==================== SLASH COMMANDS ====================
@@ -510,6 +542,23 @@ const commands = [
         .setRequired(false)),
   
   new SlashCommandBuilder()
+    .setName('rank')
+    .setDescription('Check your or someone else\'s level and XP')
+    .addUserOption(option =>
+      option.setName('user')
+        .setDescription('The user to check (leave empty for yourself)')
+        .setRequired(false)),
+  
+  new SlashCommandBuilder()
+    .setName('leaderboard')
+    .setDescription('View the server XP leaderboard')
+    .addIntegerOption(option =>
+      option.setName('page')
+        .setDescription('Page number')
+        .setRequired(false)
+        .setMinValue(1)),
+  
+  new SlashCommandBuilder()
     .setName('say')
     .setDescription('Make the bot say something'),
   
@@ -734,6 +783,54 @@ const commands = [
             .addBooleanOption(option =>
               option.setName('enabled')
                 .setDescription('Enable goodbye messages?')
+                .setRequired(true))))
+    .addSubcommandGroup(group =>
+      group.setName('leveling')
+        .setDescription('Configure leveling system')
+        .addSubcommand(sub =>
+          sub.setName('toggle')
+            .setDescription('Enable or disable leveling')
+            .addBooleanOption(option =>
+              option.setName('enabled')
+                .setDescription('Enable leveling?')
+                .setRequired(true)))
+        .addSubcommand(sub =>
+          sub.setName('settings')
+            .setDescription('Configure leveling settings')
+            .addIntegerOption(option =>
+              option.setName('xp_per_message')
+                .setDescription('XP gained per message (default: 10)')
+                .setRequired(false)
+                .setMinValue(1)
+                .setMaxValue(100))
+            .addIntegerOption(option =>
+              option.setName('cooldown')
+                .setDescription('Cooldown between XP gains in seconds (default: 60)')
+                .setRequired(false)
+                .setMinValue(10)
+                .setMaxValue(300))
+            .addBooleanOption(option =>
+              option.setName('announce_levelup')
+                .setDescription('Announce when users level up?')
+                .setRequired(false)))
+        .addSubcommand(sub =>
+          sub.setName('reward')
+            .setDescription('Add a role reward for reaching a level')
+            .addIntegerOption(option =>
+              option.setName('level')
+                .setDescription('Level required')
+                .setRequired(true)
+                .setMinValue(1))
+            .addRoleOption(option =>
+              option.setName('role')
+                .setDescription('Role to give')
+                .setRequired(true)))
+        .addSubcommand(sub =>
+          sub.setName('removereward')
+            .setDescription('Remove a level reward')
+            .addIntegerOption(option =>
+              option.setName('level')
+                .setDescription('Level to remove reward from')
                 .setRequired(true)))),
   
   // Sticky Message Commands
@@ -991,11 +1088,82 @@ client.on('messageDelete', async (message) => {
   }
 });
 
-// Message Create (Auto-responder & Sticky)
+// Message Create (Auto-responder & Sticky & Leveling)
 client.on('messageCreate', async (message) => {
-  if (message.author.bot) return;
+  if (message.author.bot || !message.guild) return;
   
   const config = await getGuildConfig(message.guild.id);
+  
+  // Leveling System
+  if (config.leveling.enabled && !config.leveling.ignoredChannels.includes(message.channel.id)) {
+    try {
+      let userLevel = await UserLevel.findOne({ guildId: message.guild.id, userId: message.author.id });
+      
+      if (!userLevel) {
+        userLevel = new UserLevel({ 
+          guildId: message.guild.id, 
+          userId: message.author.id,
+          xp: 0,
+          level: 1,
+          totalMessages: 0
+        });
+      }
+      
+      // Check cooldown
+      const now = new Date();
+      const cooldownMs = config.leveling.xpCooldown * 1000;
+      
+      if (!userLevel.lastXpGain || (now - userLevel.lastXpGain) >= cooldownMs) {
+        userLevel.totalMessages++;
+        userLevel.xp += config.leveling.xpPerMessage;
+        userLevel.lastXpGain = now;
+        
+        // Calculate level
+        const { level: newLevel, currentLevelXP, xpNeeded } = getLevelFromXP(userLevel.xp);
+        const oldLevel = userLevel.level;
+        userLevel.level = newLevel;
+        
+        await userLevel.save();
+        
+        // Check for level up
+        if (newLevel > oldLevel && config.leveling.announceLevelUp) {
+          const levelUpEmbed = new EmbedBuilder()
+            .setColor('#FFD700')
+            .setTitle('Level Up!')
+            .setDescription(`Congratulations ${message.author}! You've reached **Level ${newLevel}**!`)
+            .addFields(
+              { name: 'Total XP', value: `${userLevel.xp}`, inline: true },
+              { name: 'Next Level', value: `${xpNeeded} XP needed`, inline: true }
+            )
+            .setThumbnail(message.author.displayAvatarURL())
+            .setTimestamp();
+          
+          const channel = config.leveling.levelUpChannelId 
+            ? message.guild.channels.cache.get(config.leveling.levelUpChannelId) 
+            : message.channel;
+          
+          if (channel) await channel.send({ embeds: [levelUpEmbed] });
+          
+          // Check for role rewards
+          const reward = config.leveling.roleRewards.find(r => r.level === newLevel);
+          if (reward) {
+            try {
+              const member = message.guild.members.cache.get(message.author.id);
+              const role = message.guild.roles.cache.get(reward.roleId);
+              if (member && role) {
+                await member.roles.add(role);
+                if (channel) await channel.send(`🎉 ${message.author} earned the ${role} role for reaching Level ${newLevel}!`);
+              }
+            } catch (err) {
+              console.error('Error giving role reward:', err);
+            }
+          }
+        }
+      }
+    } catch (err) {
+      console.error('Error processing XP:', err);
+    }
+  }
   
   // Auto-responder
   for (const autoResp of config.autoResponders) {
@@ -1105,6 +1273,7 @@ client.on('interactionCreate', async (interaction) => {
       await interaction.channel.send(message);
       await interaction.reply({ content: '✅ Message sent!', ephemeral: true });
     }
+    
     return;
   }
 
@@ -1232,6 +1401,89 @@ client.on('interactionCreate', async (interaction) => {
     modal.addComponents(row);
     
     await interaction.showModal(modal);
+  }
+
+  // ==================== LEVELING COMMANDS ====================
+
+  if (commandName === 'rank') {
+    const config = await getGuildConfig(interaction.guild.id);
+    
+    if (!config.leveling.enabled) {
+      return interaction.reply({ content: '❌ Leveling is not enabled on this server.', ephemeral: true });
+    }
+    
+    const targetUser = interaction.options.getUser('user') || interaction.user;
+    const userLevel = await UserLevel.findOne({ guildId: interaction.guild.id, userId: targetUser.id });
+    
+    if (!userLevel) {
+      return interaction.reply({ content: `❌ ${targetUser.id === interaction.user.id ? 'You have' : 'This user has'} not gained any XP yet.`, ephemeral: true });
+    }
+    
+    const { level, currentLevelXP, xpNeeded } = getLevelFromXP(userLevel.xp);
+    
+    // Calculate rank
+    const allUsers = await UserLevel.find({ guildId: interaction.guild.id }).sort({ xp: -1 });
+    const rank = allUsers.findIndex(u => u.userId === targetUser.id) + 1;
+    
+    const progressBar = '█'.repeat(Math.floor((currentLevelXP / xpNeeded) * 10)) + '░'.repeat(10 - Math.floor((currentLevelXP / xpNeeded) * 10));
+    
+    const embed = new EmbedBuilder()
+      .setColor('#FFD700')
+      .setAuthor({ name: `${targetUser.tag}'s Rank`, iconURL: targetUser.displayAvatarURL() })
+      .addFields(
+        { name: 'Level', value: `${level}`, inline: true },
+        { name: 'Rank', value: `#${rank}`, inline: true },
+        { name: 'Total XP', value: `${userLevel.xp}`, inline: true },
+        { name: 'Progress', value: `${progressBar}\n${currentLevelXP}/${xpNeeded} XP to Level ${level + 1}` },
+        { name: 'Messages Sent', value: `${userLevel.totalMessages}`, inline: true }
+      )
+      .setThumbnail(targetUser.displayAvatarURL())
+      .setTimestamp();
+    
+    await interaction.reply({ embeds: [embed] });
+  }
+
+  if (commandName === 'leaderboard') {
+    const config = await getGuildConfig(interaction.guild.id);
+    
+    if (!config.leveling.enabled) {
+      return interaction.reply({ content: '❌ Leveling is not enabled on this server.', ephemeral: true });
+    }
+    
+    const page = interaction.options.getInteger('page') || 1;
+    const perPage = 10;
+    const skip = (page - 1) * perPage;
+    
+    const topUsers = await UserLevel.find({ guildId: interaction.guild.id })
+      .sort({ xp: -1 })
+      .limit(perPage)
+      .skip(skip);
+    
+    const totalUsers = await UserLevel.countDocuments({ guildId: interaction.guild.id });
+    const totalPages = Math.ceil(totalUsers / perPage);
+    
+    if (topUsers.length === 0) {
+      return interaction.reply({ content: '❌ No users on the leaderboard yet.', ephemeral: true });
+    }
+    
+    const embed = new EmbedBuilder()
+      .setColor('#FFD700')
+      .setTitle(`📊 XP Leaderboard - Page ${page}/${totalPages}`)
+      .setTimestamp();
+    
+    let description = '';
+    for (let i = 0; i < topUsers.length; i++) {
+      const userRank = skip + i + 1;
+      const user = topUsers[i];
+      const { level } = getLevelFromXP(user.xp);
+      
+      const medal = userRank === 1 ? '🥇' : userRank === 2 ? '🥈' : userRank === 3 ? '🥉' : `**${userRank}.**`;
+      description += `${medal} <@${user.userId}> - Level ${level} (${user.xp} XP)\n`;
+    }
+    
+    embed.setDescription(description);
+    
+    await interaction.reply({ embeds: [embed] });
   }
 
   // ==================== MODERATION COMMANDS ====================
@@ -2228,6 +2480,47 @@ client.on('interactionCreate', async (interaction) => {
         await config.save();
         
         await interaction.reply({ content: `✅ Goodbye messages ${enabled ? 'enabled' : 'disabled'}!`, ephemeral: true });
+      }
+    }
+    
+    if (group === 'leveling') {
+      if (subcommand === 'toggle') {
+        const enabled = interaction.options.getBoolean('enabled');
+        config.leveling.enabled = enabled;
+        await config.save();
+        
+        await interaction.reply({ content: `✅ Leveling system ${enabled ? 'enabled' : 'disabled'}!`, ephemeral: true });
+      } else if (subcommand === 'settings') {
+        const xpPerMsg = interaction.options.getInteger('xp_per_message');
+        const cooldown = interaction.options.getInteger('cooldown');
+        const announce = interaction.options.getBoolean('announce_levelup');
+        
+        if (xpPerMsg) config.leveling.xpPerMessage = xpPerMsg;
+        if (cooldown) config.leveling.xpCooldown = cooldown;
+        if (announce !== null) config.leveling.announceLevelUp = announce;
+        
+        await config.save();
+        
+        await interaction.reply({ content: `✅ Leveling settings updated!\n**XP per message:** ${config.leveling.xpPerMessage}\n**Cooldown:** ${config.leveling.xpCooldown}s\n**Announce level ups:** ${config.leveling.announceLevelUp ? 'Yes' : 'No'}`, ephemeral: true });
+      } else if (subcommand === 'reward') {
+        const level = interaction.options.getInteger('level');
+        const role = interaction.options.getRole('role');
+        
+        // Remove existing reward at this level
+        config.leveling.roleRewards = config.leveling.roleRewards.filter(r => r.level !== level);
+        
+        // Add new reward
+        config.leveling.roleRewards.push({ level, roleId: role.id });
+        await config.save();
+        
+        await interaction.reply({ content: `✅ Level ${level} reward set to ${role}!`, ephemeral: true });
+      } else if (subcommand === 'removereward') {
+        const level = interaction.options.getInteger('level');
+        
+        config.leveling.roleRewards = config.leveling.roleRewards.filter(r => r.level !== level);
+        await config.save();
+        
+        await interaction.reply({ content: `✅ Removed reward for level ${level}.`, ephemeral: true });
       }
     }
   }

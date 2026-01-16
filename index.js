@@ -140,10 +140,14 @@ const TempBan = mongoose.model('TempBan', tempBanSchema);
 const UserLevel = mongoose.model('UserLevel', userLevelSchema);
 
 // ==================== MONGODB CONNECTION ====================
-mongoose.connect(process.env.MONGODB_URI).then(() => {
+mongoose.connect(process.env.MONGODB_URI, {
+  serverSelectionTimeoutMS: 10000,
+  socketTimeoutMS: 45000,
+}).then(() => {
   console.log('✅ Connected to MongoDB');
 }).catch(err => {
   console.error('❌ MongoDB connection error:', err);
+  console.error('Bot will continue running but database features will be disabled.');
 });
 
 // ==================== GIVEAWAY DATA ====================
@@ -152,12 +156,28 @@ const activeGiveaways = new Map();
 // ==================== HELPER FUNCTIONS ====================
 
 async function getGuildConfig(guildId) {
-  let config = await GuildConfig.findOne({ guildId });
-  if (!config) {
-    config = new GuildConfig({ guildId });
-    await config.save();
+  try {
+    let config = await GuildConfig.findOne({ guildId });
+    if (!config) {
+      config = new GuildConfig({ guildId });
+      await config.save();
+    }
+    return config;
+  } catch (err) {
+    console.error('Error fetching guild config:', err);
+    // Return a default config if database is unavailable
+    return {
+      guildId,
+      roles: {},
+      logs: {},
+      logWebhooks: {},
+      welcome: { enabled: false },
+      goodbye: { enabled: false },
+      leveling: { enabled: false, xpPerMessage: 10, xpCooldown: 60, announceLevelUp: true, ignoredChannels: [], roleRewards: [] },
+      stickyMessages: [],
+      autoResponders: []
+    };
   }
-  return config;
 }
 
 async function generateCaseId(guildId) {
@@ -1094,75 +1114,10 @@ client.on('messageCreate', async (message) => {
   
   const config = await getGuildConfig(message.guild.id);
   
-  // Leveling System
+  // Leveling System (run async without blocking)
   if (config.leveling.enabled && !config.leveling.ignoredChannels.includes(message.channel.id)) {
-    try {
-      let userLevel = await UserLevel.findOne({ guildId: message.guild.id, userId: message.author.id });
-      
-      if (!userLevel) {
-        userLevel = new UserLevel({ 
-          guildId: message.guild.id, 
-          userId: message.author.id,
-          xp: 0,
-          level: 1,
-          totalMessages: 0
-        });
-      }
-      
-      // Check cooldown
-      const now = new Date();
-      const cooldownMs = config.leveling.xpCooldown * 1000;
-      
-      if (!userLevel.lastXpGain || (now - userLevel.lastXpGain) >= cooldownMs) {
-        userLevel.totalMessages++;
-        userLevel.xp += config.leveling.xpPerMessage;
-        userLevel.lastXpGain = now;
-        
-        // Calculate level
-        const { level: newLevel, currentLevelXP, xpNeeded } = getLevelFromXP(userLevel.xp);
-        const oldLevel = userLevel.level;
-        userLevel.level = newLevel;
-        
-        await userLevel.save();
-        
-        // Check for level up
-        if (newLevel > oldLevel && config.leveling.announceLevelUp) {
-          const levelUpEmbed = new EmbedBuilder()
-            .setColor('#FFD700')
-            .setTitle('Level Up!')
-            .setDescription(`Congratulations ${message.author}! You've reached **Level ${newLevel}**!`)
-            .addFields(
-              { name: 'Total XP', value: `${userLevel.xp}`, inline: true },
-              { name: 'Next Level', value: `${xpNeeded} XP needed`, inline: true }
-            )
-            .setThumbnail(message.author.displayAvatarURL())
-            .setTimestamp();
-          
-          const channel = config.leveling.levelUpChannelId 
-            ? message.guild.channels.cache.get(config.leveling.levelUpChannelId) 
-            : message.channel;
-          
-          if (channel) await channel.send({ embeds: [levelUpEmbed] });
-          
-          // Check for role rewards
-          const reward = config.leveling.roleRewards.find(r => r.level === newLevel);
-          if (reward) {
-            try {
-              const member = message.guild.members.cache.get(message.author.id);
-              const role = message.guild.roles.cache.get(reward.roleId);
-              if (member && role) {
-                await member.roles.add(role);
-                if (channel) await channel.send(`🎉 ${message.author} earned the ${role} role for reaching Level ${newLevel}!`);
-              }
-            } catch (err) {
-              console.error('Error giving role reward:', err);
-            }
-          }
-        }
-      }
-    } catch (err) {
-      console.error('Error processing XP:', err);
-    }
+    // Don't await - process in background
+    processXP(message, config).catch(err => console.error('Error processing XP:', err));
   }
   
   // Auto-responder
@@ -1206,6 +1161,77 @@ client.on('messageCreate', async (message) => {
     }, sticky.delay);
   }
 });
+
+// Separate function to process XP
+async function processXP(message, config) {
+  try {
+    let userLevel = await UserLevel.findOne({ guildId: message.guild.id, userId: message.author.id });
+    
+    if (!userLevel) {
+      userLevel = new UserLevel({ 
+        guildId: message.guild.id, 
+        userId: message.author.id,
+        xp: 0,
+        level: 1,
+        totalMessages: 0
+      });
+    }
+    
+    // Check cooldown
+    const now = new Date();
+    const cooldownMs = config.leveling.xpCooldown * 1000;
+    
+    if (!userLevel.lastXpGain || (now - userLevel.lastXpGain) >= cooldownMs) {
+      userLevel.totalMessages++;
+      userLevel.xp += config.leveling.xpPerMessage;
+      userLevel.lastXpGain = now;
+      
+      // Calculate level
+      const { level: newLevel, currentLevelXP, xpNeeded } = getLevelFromXP(userLevel.xp);
+      const oldLevel = userLevel.level;
+      userLevel.level = newLevel;
+      
+      await userLevel.save();
+      
+      // Check for level up
+      if (newLevel > oldLevel && config.leveling.announceLevelUp) {
+        const levelUpEmbed = new EmbedBuilder()
+          .setColor('#FFD700')
+          .setTitle('Level Up!')
+          .setDescription(`Congratulations ${message.author}! You've reached **Level ${newLevel}**!`)
+          .addFields(
+            { name: 'Total XP', value: `${userLevel.xp}`, inline: true },
+            { name: 'Next Level', value: `${xpNeeded} XP needed`, inline: true }
+          )
+          .setThumbnail(message.author.displayAvatarURL())
+          .setTimestamp();
+        
+        const channel = config.leveling.levelUpChannelId 
+          ? message.guild.channels.cache.get(config.leveling.levelUpChannelId) 
+          : message.channel;
+        
+        if (channel) await channel.send({ embeds: [levelUpEmbed] });
+        
+        // Check for role rewards
+        const reward = config.leveling.roleRewards.find(r => r.level === newLevel);
+        if (reward) {
+          try {
+            const member = message.guild.members.cache.get(message.author.id);
+            const role = message.guild.roles.cache.get(reward.roleId);
+            if (member && role) {
+              await member.roles.add(role);
+              if (channel) await channel.send(`🎉 ${message.author} earned the ${role} role for reaching Level ${newLevel}!`);
+            }
+          } catch (err) {
+            console.error('Error giving role reward:', err);
+          }
+        }
+      }
+    }
+  } catch (err) {
+    console.error('Error in processXP:', err);
+  }
+}
 
 // Channel events for logging
 client.on('channelCreate', async (channel) => {
@@ -1406,84 +1432,98 @@ client.on('interactionCreate', async (interaction) => {
   // ==================== LEVELING COMMANDS ====================
 
   if (commandName === 'rank') {
-    const config = await getGuildConfig(interaction.guild.id);
-    
-    if (!config.leveling.enabled) {
-      return interaction.reply({ content: '❌ Leveling is not enabled on this server.', ephemeral: true });
+    try {
+      const config = await getGuildConfig(interaction.guild.id);
+      
+      if (!config.leveling.enabled) {
+        return interaction.reply({ content: '❌ Leveling is not enabled on this server.', ephemeral: true });
+      }
+      
+      const targetUser = interaction.options.getUser('user') || interaction.user;
+      const userLevel = await UserLevel.findOne({ guildId: interaction.guild.id, userId: targetUser.id });
+      
+      if (!userLevel) {
+        return interaction.reply({ content: `❌ ${targetUser.id === interaction.user.id ? 'You have' : 'This user has'} not gained any XP yet.`, ephemeral: true });
+      }
+      
+      const { level, currentLevelXP, xpNeeded } = getLevelFromXP(userLevel.xp);
+      
+      // Calculate rank
+      const allUsers = await UserLevel.find({ guildId: interaction.guild.id }).sort({ xp: -1 });
+      const rank = allUsers.findIndex(u => u.userId === targetUser.id) + 1;
+      
+      const progressBar = '█'.repeat(Math.floor((currentLevelXP / xpNeeded) * 10)) + '░'.repeat(10 - Math.floor((currentLevelXP / xpNeeded) * 10));
+      
+      const embed = new EmbedBuilder()
+        .setColor('#FFD700')
+        .setAuthor({ name: `${targetUser.tag}'s Rank`, iconURL: targetUser.displayAvatarURL() })
+        .addFields(
+          { name: 'Level', value: `${level}`, inline: true },
+          { name: 'Rank', value: `#${rank}`, inline: true },
+          { name: 'Total XP', value: `${userLevel.xp}`, inline: true },
+          { name: 'Progress', value: `${progressBar}\n${currentLevelXP}/${xpNeeded} XP to Level ${level + 1}` },
+          { name: 'Messages Sent', value: `${userLevel.totalMessages}`, inline: true }
+        )
+        .setThumbnail(targetUser.displayAvatarURL())
+        .setTimestamp();
+      
+      await interaction.reply({ embeds: [embed] });
+    } catch (error) {
+      console.error('Error in rank command:', error);
+      if (!interaction.replied) {
+        await interaction.reply({ content: '❌ An error occurred while fetching rank data.', ephemeral: true });
+      }
     }
-    
-    const targetUser = interaction.options.getUser('user') || interaction.user;
-    const userLevel = await UserLevel.findOne({ guildId: interaction.guild.id, userId: targetUser.id });
-    
-    if (!userLevel) {
-      return interaction.reply({ content: `❌ ${targetUser.id === interaction.user.id ? 'You have' : 'This user has'} not gained any XP yet.`, ephemeral: true });
-    }
-    
-    const { level, currentLevelXP, xpNeeded } = getLevelFromXP(userLevel.xp);
-    
-    // Calculate rank
-    const allUsers = await UserLevel.find({ guildId: interaction.guild.id }).sort({ xp: -1 });
-    const rank = allUsers.findIndex(u => u.userId === targetUser.id) + 1;
-    
-    const progressBar = '█'.repeat(Math.floor((currentLevelXP / xpNeeded) * 10)) + '░'.repeat(10 - Math.floor((currentLevelXP / xpNeeded) * 10));
-    
-    const embed = new EmbedBuilder()
-      .setColor('#FFD700')
-      .setAuthor({ name: `${targetUser.tag}'s Rank`, iconURL: targetUser.displayAvatarURL() })
-      .addFields(
-        { name: 'Level', value: `${level}`, inline: true },
-        { name: 'Rank', value: `#${rank}`, inline: true },
-        { name: 'Total XP', value: `${userLevel.xp}`, inline: true },
-        { name: 'Progress', value: `${progressBar}\n${currentLevelXP}/${xpNeeded} XP to Level ${level + 1}` },
-        { name: 'Messages Sent', value: `${userLevel.totalMessages}`, inline: true }
-      )
-      .setThumbnail(targetUser.displayAvatarURL())
-      .setTimestamp();
-    
-    await interaction.reply({ embeds: [embed] });
   }
 
   if (commandName === 'leaderboard') {
-    const config = await getGuildConfig(interaction.guild.id);
-    
-    if (!config.leveling.enabled) {
-      return interaction.reply({ content: '❌ Leveling is not enabled on this server.', ephemeral: true });
-    }
-    
-    const page = interaction.options.getInteger('page') || 1;
-    const perPage = 10;
-    const skip = (page - 1) * perPage;
-    
-    const topUsers = await UserLevel.find({ guildId: interaction.guild.id })
-      .sort({ xp: -1 })
-      .limit(perPage)
-      .skip(skip);
-    
-    const totalUsers = await UserLevel.countDocuments({ guildId: interaction.guild.id });
-    const totalPages = Math.ceil(totalUsers / perPage);
-    
-    if (topUsers.length === 0) {
-      return interaction.reply({ content: '❌ No users on the leaderboard yet.', ephemeral: true });
-    }
-    
-    const embed = new EmbedBuilder()
-      .setColor('#FFD700')
-      .setTitle(`📊 XP Leaderboard - Page ${page}/${totalPages}`)
-      .setTimestamp();
-    
-    let description = '';
-    for (let i = 0; i < topUsers.length; i++) {
-      const userRank = skip + i + 1;
-      const user = topUsers[i];
-      const { level } = getLevelFromXP(user.xp);
+    try {
+      const config = await getGuildConfig(interaction.guild.id);
       
-      const medal = userRank === 1 ? '🥇' : userRank === 2 ? '🥈' : userRank === 3 ? '🥉' : `**${userRank}.**`;
-      description += `${medal} <@${user.userId}> - Level ${level} (${user.xp} XP)\n`;
+      if (!config.leveling.enabled) {
+        return interaction.reply({ content: '❌ Leveling is not enabled on this server.', ephemeral: true });
+      }
+      
+      const page = interaction.options.getInteger('page') || 1;
+      const perPage = 10;
+      const skip = (page - 1) * perPage;
+      
+      const topUsers = await UserLevel.find({ guildId: interaction.guild.id })
+        .sort({ xp: -1 })
+        .limit(perPage)
+        .skip(skip);
+      
+      const totalUsers = await UserLevel.countDocuments({ guildId: interaction.guild.id });
+      const totalPages = Math.ceil(totalUsers / perPage);
+      
+      if (topUsers.length === 0) {
+        return interaction.reply({ content: '❌ No users on the leaderboard yet.', ephemeral: true });
+      }
+      
+      const embed = new EmbedBuilder()
+        .setColor('#FFD700')
+        .setTitle(`📊 XP Leaderboard - Page ${page}/${totalPages}`)
+        .setTimestamp();
+      
+      let description = '';
+      for (let i = 0; i < topUsers.length; i++) {
+        const userRank = skip + i + 1;
+        const user = topUsers[i];
+        const { level } = getLevelFromXP(user.xp);
+        
+        const medal = userRank === 1 ? '🥇' : userRank === 2 ? '🥈' : userRank === 3 ? '🥉' : `**${userRank}.**`;
+        description += `${medal} <@${user.userId}> - Level ${level} (${user.xp} XP)\n`;
+      }
+      
+      embed.setDescription(description);
+      
+      await interaction.reply({ embeds: [embed] });
+    } catch (error) {
+      console.error('Error in leaderboard command:', error);
+      if (!interaction.replied) {
+        await interaction.reply({ content: '❌ An error occurred while fetching leaderboard data.', ephemeral: true });
+      }
     }
-    
-    embed.setDescription(description);
-    
-    await interaction.reply({ embeds: [embed] });
   }
 
   // ==================== MODERATION COMMANDS ====================

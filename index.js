@@ -930,7 +930,7 @@ client.once('ready', async () => {
   
   // Set custom status
   client.user.setPresence({
-    activities: [{ name: 'Beta v1 • Made by Sy', type: 3 }], // 3 = WATCHING
+    activities: [{ name: 'Beta v1.4 • Made by Sy', type: 3 }], // 3 = WATCHING
     status: 'online'
   });
 
@@ -1362,7 +1362,7 @@ client.on('interactionCreate', async (interaction) => {
           value: '`/ping` `/help` `/whois` `/say`' 
         }
       )
-      .setFooter({ text: 'Beta v1 • Made by Sy' })
+      .setFooter({ text: 'Beta v1.4 • Made by Sy' })
       .setTimestamp();
     
     await interaction.reply({ embeds: [embed] });

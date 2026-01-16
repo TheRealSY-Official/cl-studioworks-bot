@@ -910,7 +910,7 @@ client.once('ready', async () => {
   
   // Set custom status
   client.user.setPresence({
-    activities: [{ name: 'Beta v1.4 • Made by Sy', type: 3 }], // 3 = WATCHING
+    activities: [{ name: 'Beta v1 • Made by Sy', type: 3 }], // 3 = WATCHING
     status: 'online'
   });
 
